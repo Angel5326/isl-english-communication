@@ -17,16 +17,17 @@ import tempfile
 from pathlib import Path
 from typing import Dict
 
-
 from nlp.gloss_to_english import GlossToEnglish
 from nlp.english_to_gloss import EnglishToGloss
 
 app = FastAPI(title="ISL-English Real-Time Server")
 
+# --- FIXED CORS SETTINGS ---
+# We must set allow_credentials=False when using allow_origins=["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False, 
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -60,10 +61,9 @@ hands_detector = mp_hands.Hands(
 # --- Using the NORMALIZED model ---
 SEQ_MODEL_PATH = Path("ml/models/sequence_classifier_normalized.pt")
 SEQ_LABELS_PATH = Path("ml/models/sequence_labels_normalized.json")
-SEQ_LEN = 30  # FIXED: was 10, but the model was trained on 30-frame sequences
+SEQ_LEN = 30
 FEATURE_DIM = 126
 HIDDEN_DIM = 64
-
 
 class SignLSTM(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers, num_classes):
@@ -77,7 +77,6 @@ class SignLSTM(nn.Module):
         last_out = lstm_out[:, -1, :]
         return self.fc(self.dropout(last_out))
 
-
 sequence_model = None
 sequence_labels = None
 if SEQ_MODEL_PATH.exists() and SEQ_LABELS_PATH.exists():
@@ -90,7 +89,6 @@ if SEQ_MODEL_PATH.exists() and SEQ_LABELS_PATH.exists():
     print(f"   SEQ_LEN={SEQ_LEN}, LSTM layers={sequence_model.lstm.num_layers}")
 else:
     print("⚠️ No normalized sequence model found. Run normalize_dataset.py + retrain first.")
-
 
 def normalize_frame(frame_features: np.ndarray) -> np.ndarray:
     """Same normalization used during training — must match exactly."""
@@ -109,7 +107,6 @@ def normalize_frame(frame_features: np.ndarray) -> np.ndarray:
 
     return np.concatenate([normalize_hand(left), normalize_hand(right)])
 
-
 def extract_landmarks_from_video(video_path: str) -> np.ndarray:
     cap = cv2.VideoCapture(video_path)
     frame_count = 0
@@ -122,8 +119,6 @@ def extract_landmarks_from_video(video_path: str) -> np.ndarray:
             break
         frame_count += 1
 
-        # Process every other frame — roughly halves MediaPipe workload,
-        # negligible accuracy impact since we resample to SEQ_LEN afterward.
         if frame_count % 2 != 0:
             continue
 
@@ -150,7 +145,6 @@ def extract_landmarks_from_video(video_path: str) -> np.ndarray:
     print(f"[extract_landmarks] read {frame_count} raw frames, processed {processed_count}")
     return np.array(sequence, dtype=np.float32)
 
-
 def resample_sequence(seq: np.ndarray, target_len: int = SEQ_LEN) -> np.ndarray:
     n = seq.shape[0]
     if n == 0:
@@ -159,7 +153,6 @@ def resample_sequence(seq: np.ndarray, target_len: int = SEQ_LEN) -> np.ndarray:
         return seq
     indices = np.linspace(0, n - 1, target_len).astype(int)
     return seq[indices]
-
 
 class SessionManager:
     def __init__(self):
