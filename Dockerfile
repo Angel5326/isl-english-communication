@@ -19,8 +19,11 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 COPY backend/requirements-render.txt .
 RUN pip install --no-cache-dir -r requirements-render.txt
 
-# 3. Copy the backend code
+# Copy the backend code
 COPY backend ./backend
+
+# Copy the ML models folder (Add this new line!)
+COPY ml ./ml
 
 EXPOSE 8000
 
