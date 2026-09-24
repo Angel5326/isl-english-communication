@@ -1,0 +1,9 @@
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+.env
+dataset/
+new_flutter_app/build/
+new_flutter_app/.dart_tool/
