@@ -85287,7 +85287,7 @@ case 9:m=a5
 s=10
 return A.C(m.J7(),$async$l2)
 case 10:l=a5
-if(J.cd(l)<5000){A.hF().$1("[CameraService] \u26a0\ufe0f Clip too small \u2014 tab likely lost focus. Skipping.")
+if(J.cd(l)<1e4){A.hF().$1("[CameraService] \u26a0\ufe0f Clip too small \u2014 tab likely lost focus. Skipping.")
 s=1
 break}k=A.aNp("POST",A.eD("https://handy-talk.onrender.com/api/predict-sign"))
 a1=k.y
