@@ -85330,7 +85330,7 @@ break
 case 6:case 1:return A.H(q,r)
 case 2:return A.G(o.at(-1),r)}})
 return A.I($async$l2,r)},
-a45(a,b){var s,r,q,p,o,n,m="No sign detected",l=b>=0.45?a:m,k=this.r
+a45(a,b){var s,r,q,p,o,n,m="No sign detected",l=b>=0.8?a:m,k=this.r
 k.ht(0,l)
 if(k.gA(0)>3)k.oG()
 s=A.q(t.N,t.S)
@@ -85339,7 +85339,7 @@ if(p==null)p=q.a(p)
 if(p===m)continue
 o=s.h(0,p)
 s.m(0,p,(o==null?0:o)+1)}for(r=new A.dF(s,s.$ti.i("dF<1,2>")).ga3(0);r.u();){n=r.d
-if(n.b>=1){r=n.a
+if(n.b>=3){r=n.a
 A.hF().$1("[CameraService] \u2705 Confirmed: "+r)
 k.T(0)
 return r}}return m}}
