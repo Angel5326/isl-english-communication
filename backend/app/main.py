@@ -20,6 +20,10 @@ from typing import Dict
 from nlp.gloss_to_english import GlossToEnglish
 from nlp.english_to_gloss import EnglishToGloss
 
+from groq import Groq
+
+
+
 app = FastAPI(title="ISL-English Real-Time Server")
 
 # --- FIXED CORS SETTINGS ---
@@ -46,6 +50,8 @@ class SessionJoin(BaseModel):
     user_id: str
 
 gloss_to_english = GlossToEnglish()
+# Initialize Groq client (uses the environment variable we will set on Render)
+groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 english_to_gloss = EnglishToGloss()
 
 mp_hands = mp.solutions.hands
@@ -260,8 +266,40 @@ async def predict_sign(video: UploadFile = File(...)):
 
 @app.post("/api/translate-gloss")
 async def translate_gloss(request: TranslateRequest):
-    english = gloss_to_english.translate(request.gloss)
-    return {"english": english}
+    gloss_text = request.gloss.strip().upper()
+    
+    if not gloss_text:
+        return {"english": ""}
+
+    # 1. If it's a single word, just capitalize it (no need to call the AI)
+    if " " not in gloss_text:
+        return {"english": gloss_text.capitalize()}
+        
+    # 2. If it's a sentence, use the LLM for perfect grammar
+    try:
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert translator for Indian Sign Language (ISL). Convert the following ISL Gloss into grammatically correct, natural English. Only return the translated sentence, nothing else. Do not add quotes."
+                },
+                {
+                    "role": "user",
+                    "content": gloss_text,
+                }
+            ],
+            model="llama3-8b-8192", # Fast and free model
+            temperature=0.3, # Keep it focused
+        )
+        
+        english_translation = chat_completion.choices[0].message.content.strip()
+        return {"english": english_translation}
+        
+    except Exception as e:
+        print(f"LLM Error: {e}")
+        # Fallback to local rules if the API fails (e.g., no internet)
+        english = gloss_to_english.translate(request.gloss)
+        return {"english": english}
 
 @app.post("/api/english-to-isl")
 async def english_to_isl(request: EnglishRequest):
