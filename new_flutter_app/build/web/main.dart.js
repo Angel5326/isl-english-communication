@@ -84994,39 +84994,39 @@ case 6:case 1:return A.H(q,r)
 case 2:return A.G(o.at(-1),r)}})
 return A.I($async$x7,r)},
 xq(a){return this.ad0(a)},
-ad0(a){var s=0,r=A.J(t.H),q,p=2,o=[],n=this,m,l,k,j,i,h,g,f,e,d
-var $async$xq=A.E(function(b,c){if(b===1){o.push(c)
-s=p}for(;;)switch(s){case 0:e={}
-if(n.c==null){s=1
+ad0(a){var s=0,r=A.J(t.H),q,p=2,o=[],n=this,m,l,k,j,i,h,g,f,e,d,c
+var $async$xq=A.E(function(b,a0){if(b===1){o.push(a0)
+s=p}for(;;)switch(s){case 0:if(n.c==null){s=1
 break}if(a==="Waiting..."||a==="No sign detected"||B.c.bJ(a,"Skipped")){s=1
-break}n.ae(new A.alM(n,a))
-k=new A.f1(Date.now(),0,!1)
-if(a===n.ch&&B.i.d4(k.fI(n.CW).a,1000)<2500){s=1
+break}i=new A.f1(Date.now(),0,!1)
+if(a===n.ch&&B.i.d4(i.fI(n.CW).a,1000)<2500){s=1
 break}n.ch=a
-n.CW=k
-e.a=a
+n.CW=i
+n.ae(new A.alM(n,a))
+n.ae(new A.alN(n,a))
+m=B.b.bp(n.ay," ")
+l=m
 p=4
-j=A.eD("https://handy-talk.onrender.com/api/translate-gloss")
-i=t.N
-h=A.aj(["Content-Type","application/json"],i,i)
+h=A.eD("https://handy-talk.onrender.com/api/translate-gloss")
+g=t.N
+f=A.aj(["Content-Type","application/json"],g,g)
 s=7
-return A.C(A.avh(j,B.aW.qg(A.aj(["gloss",a],i,i),null),h),$async$xq)
-case 7:m=c
-if(m.b===200){j=m
-g=J.ba(B.aW.o0(0,A.rw(A.rs(j.e).c.a.h(0,"charset")).dQ(0,j.w),null),"english")
-e.a=g==null?a:g}p=2
+return A.C(A.avh(h,B.aW.qg(A.aj(["gloss",m],g,g),null),f),$async$xq)
+case 7:k=a0
+if(k.b===200){h=k
+e=J.ba(B.aW.o0(0,A.rw(A.rs(h.e).c.a.h(0,"charset")).dQ(0,h.w),null),"english")
+l=e==null?m:e}p=2
 s=6
 break
 case 4:p=3
-d=o.pop()
-l=A.a3(d)
-A.hF().$1("translate-gloss error: "+A.k(l))
+c=o.pop()
+j=A.a3(c)
+A.hF().$1("translate-gloss error: "+A.k(j))
 s=6
 break
 case 3:s=2
 break
-case 6:n.ae(new A.alN(e,n))
-n.Fc(A.aj(["kind","sign","gloss",a,"english",B.b.bp(n.ay," "),"timestamp",new A.f1(Date.now(),0,!1).Jy()],t.N,t.z))
+case 6:n.Fc(A.aj(["kind","sign","gloss",m,"english",l,"timestamp",new A.f1(Date.now(),0,!1).Jy()],t.N,t.z))
 case 1:return A.H(q,r)
 case 2:return A.G(o.at(-1),r)}})
 return A.I($async$xq,r)},
@@ -85231,7 +85231,7 @@ A.alM.prototype={
 $0(){return this.a.ax=this.b},
 $S:0}
 A.alN.prototype={
-$0(){this.b.ay.push(this.a.a.toUpperCase())},
+$0(){this.a.ay.push(this.b.toUpperCase())},
 $S:0}
 A.alR.prototype={
 $0(){var s=this.a
