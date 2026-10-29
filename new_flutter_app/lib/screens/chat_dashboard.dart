@@ -197,12 +197,18 @@ class _ChatDashboardState extends State<ChatDashboard> {
     }
   }
 
-    Future<void> _onGlossDetected(String gloss) async {
+      Future<void> _onGlossDetected(String gloss) async {
     if (!mounted) return;
+
+    // 1. Ignore junk messages completely so they don't overwrite the screen
+    if (gloss == 'Waiting...' || gloss == 'No sign detected' || gloss.startsWith('Skipped')) {
+      return; 
+    }
+
+    // 2. Only update the UI if a real word was detected
     setState(() => _predictedGloss = gloss);
     
-    // Ignore these default messages
-    if (gloss == 'Waiting...' || gloss == 'No sign detected' || gloss.startsWith('Skipped')) return;
+    // ... rest of the code ...
 
     // --- DUPLICATE PREVENTION ---
     // If the camera detects the same word again within 2.5 seconds, ignore it.
@@ -565,6 +571,7 @@ class _ChatDashboardState extends State<ChatDashboard> {
       ),
     );
   }
+  
   // --- Bottom panel: partner's incoming message (video OR text) ---
   Widget _buildIncomingPanel() {
     if (_latestIncoming == null) {

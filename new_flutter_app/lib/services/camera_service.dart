@@ -14,13 +14,13 @@ class CameraService {
   bool _isActive = false;
 
   static const String _baseUrl = 'https://handy-talk.onrender.com';
-  static const Duration recordDuration = Duration(milliseconds: 1500);
+  static const Duration recordDuration = Duration(milliseconds: 2000);
   static const Duration gapBetweenAttempts = Duration(milliseconds: 100);
-  static const double minConfidence = 0.65;
+  static const double minConfidence = 0.30;
 
   final Queue<String> _recentPredictions = Queue<String>();
   static const int smoothingWindow = 3;
-  static const int votesNeeded = 3;
+  static const int votesNeeded = 1;
 
   Future<void> initialize() async {
     final cameras = await availableCameras();
