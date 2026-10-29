@@ -54,6 +54,7 @@ mp_hands = mp.solutions.hands
 hands_detector = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=2,
+    model_complexity=0, # <--- ADD THIS
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5,
 )
@@ -119,7 +120,7 @@ def extract_landmarks_from_video(video_path: str) -> np.ndarray:
             break
         frame_count += 1
 
-        if frame_count % 2 != 0:
+        if frame_count % 3 != 0:
             continue
 
         processed_count += 1

@@ -14,7 +14,8 @@ class ChatDashboard extends StatefulWidget {
 }
 
 class _ChatDashboardState extends State<ChatDashboard> {
-  static const String _baseUrl = 'localhost:8000';
+  // --- Base URL for the cloud backend ---
+  static const String _baseUrl = 'https://handy-talk.onrender.com';
 
   // --- Session state ---
   String _sessionId = '';
@@ -35,6 +36,11 @@ class _ChatDashboardState extends State<ChatDashboard> {
   // --- Sign detection ---
   CameraService? _cameraService;
   String _predictedGloss = 'Waiting...';
+
+    // --- Sentence Building ---
+  List<String> _sentenceWords = [];
+  String _lastDetectedWord = '';
+  DateTime _lastDetectionTime = DateTime.now();
 
   // --- Incoming message from partner (drives the bottom panel) ---
   Map<String, dynamic>? _latestIncoming;
@@ -58,7 +64,7 @@ class _ChatDashboardState extends State<ChatDashboard> {
     setState(() => _isJoining = true);
     try {
       final response = await http.post(
-        Uri.parse('http://$_baseUrl/api/session/create'),
+        Uri.parse('$_baseUrl/api/session/create'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'user_id': _userId}),
       );
@@ -80,7 +86,7 @@ class _ChatDashboardState extends State<ChatDashboard> {
     setState(() => _isJoining = true);
     try {
       final response = await http.post(
-        Uri.parse('http://$_baseUrl/api/session/join'),
+        Uri.parse('$_baseUrl/api/session/join'), // <--- FIXED: Added missing comma
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'session_id': sessionId, 'user_id': _userId}),
       );
@@ -116,7 +122,8 @@ class _ChatDashboardState extends State<ChatDashboard> {
 
   void _connectWebSocket() {
     _channel = WebSocketChannel.connect(
-      Uri.parse('ws://$_baseUrl/ws/$_sessionId/$_userId'),
+      // <--- FIXED: Changed 'ri' to 'Uri', added underscores to sessionId and userId
+      Uri.parse('wss://handy-talk.onrender.com/ws/$_sessionId/$_userId'),
     );
     _channel!.stream.listen(
       (data) {
@@ -162,7 +169,8 @@ class _ChatDashboardState extends State<ChatDashboard> {
     _statusTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       try {
         final response = await http.get(
-          Uri.parse('http://$_baseUrl/api/session/$_sessionId/status'),
+          // <--- FIXED: Removed 'http://' before '$_baseUrl'
+          Uri.parse('$_baseUrl/api/session/$_sessionId/status'),
         );
         if (response.statusCode == 200) {
           var data = jsonDecode(response.body);
@@ -189,15 +197,28 @@ class _ChatDashboardState extends State<ChatDashboard> {
     }
   }
 
-  Future<void> _onGlossDetected(String gloss) async {
+    Future<void> _onGlossDetected(String gloss) async {
     if (!mounted) return;
     setState(() => _predictedGloss = gloss);
-    if (gloss == 'Waiting...' || gloss == 'No sign detected') return;
+    
+    // Ignore these default messages
+    if (gloss == 'Waiting...' || gloss == 'No sign detected' || gloss.startsWith('Skipped')) return;
 
+    // --- DUPLICATE PREVENTION ---
+    // If the camera detects the same word again within 2.5 seconds, ignore it.
+    // This prevents "HELLO HELLO HELLO" when the user holds a sign.
+    final now = DateTime.now();
+    if (gloss == _lastDetectedWord && now.difference(_lastDetectionTime).inMilliseconds < 2500) {
+      return; 
+    }
+    _lastDetectedWord = gloss;
+    _lastDetectionTime = now;
+
+    // Translate the gloss to English
     String english = gloss;
     try {
       final response = await http.post(
-        Uri.parse('http://$_baseUrl/api/translate-gloss'),
+        Uri.parse('$_baseUrl/api/translate-gloss'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'gloss': gloss}),
       );
@@ -208,10 +229,16 @@ class _ChatDashboardState extends State<ChatDashboard> {
       debugPrint('translate-gloss error: $e');
     }
 
+    // --- BUILD THE SENTENCE ---
+    setState(() {
+      _sentenceWords.add(english.toUpperCase()); 
+    });
+
+    // Send the accumulated sentence to the other phone
     _sendRaw({
       'kind': 'sign',
       'gloss': gloss,
-      'english': english,
+      'english': _sentenceWords.join(' '), // This joins the words with spaces!
       'timestamp': DateTime.now().toIso8601String(),
     });
   }
@@ -225,7 +252,8 @@ class _ChatDashboardState extends State<ChatDashboard> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://$_baseUrl/api/english-to-isl'),
+        // <--- FIXED: Removed 'http://' before '$_baseUrl'
+        Uri.parse('$_baseUrl/api/english-to-isl'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'text': text}),
       );
@@ -260,26 +288,31 @@ class _ChatDashboardState extends State<ChatDashboard> {
     _playNextVideo();
   }
 
-  void _playNextVideo() {
+    void _playNextVideo() {
+    // If the queue is empty, do nothing
+    if (_videoQueue.isEmpty) return;
+
+    // If we reach the end of the queue, loop back to the beginning!
     if (_videoIndex >= _videoQueue.length) {
-      setState(() {
-        _videoController?.dispose();
-        _videoController = null;
-      });
-      return;
+      _videoIndex = 0; 
     }
+    
     String word = _videoQueue[_videoIndex];
+    
     _tryLoadVideo('assets/videos/$word.mp4', () {
       _tryLoadVideo('assets/videos/${word.toLowerCase()}.mp4', () {
         setState(() {
           _videoNotFound = true;
           _videoIndex++;
         });
-        _playNextVideo();
+        // A tiny delay prevents the app from freezing if a video is missing
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) _playNextVideo();
+        });
       });
     });
   }
-
+  
   void _tryLoadVideo(String assetPath, VoidCallback onFail) {
     final controller = VideoPlayerController.asset(assetPath);
     controller.initialize().then((_) {
@@ -441,7 +474,7 @@ class _ChatDashboardState extends State<ChatDashboard> {
   }
 
   // --- Top panel: Sign mode (your camera) ---
-  Widget _buildSignInput() {
+    Widget _buildSignInput() {
     return Column(
       children: [
         Expanded(
@@ -450,20 +483,47 @@ class _ChatDashboardState extends State<ChatDashboard> {
               : const Center(child: CircularProgressIndicator()),
         ),
         Container(
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           color: Colors.blue[50],
           width: double.infinity,
-          child: Text(
-            'Detected: $_predictedGloss',
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  'Detected: $_predictedGloss',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              // --- NEW CLEAR BUTTON ---
+              TextButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _sentenceWords.clear();
+                    _predictedGloss = 'Waiting...';
+                    _lastDetectedWord = '';
+                  });
+                  // Send a clear signal to the partner
+                  _sendRaw({
+                    'kind': 'sign',
+                    'gloss': '',
+                    'english': '',
+                    'timestamp': DateTime.now().toIso8601String(),
+                  });
+                },
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Clear'),
+                style: TextButton.styleFrom(foregroundColor: Colors.red),
+              ),
+            ],
           ),
         ),
       ],
     );
   }
 
-  // --- Top panel: Speak mode (text/voice input) ---
+    // --- Top panel: Speak mode (text/voice input) ---
   Widget _buildSpeakInput() {
     return Padding(
       padding: const EdgeInsets.all(16.0),
@@ -505,7 +565,6 @@ class _ChatDashboardState extends State<ChatDashboard> {
       ),
     );
   }
-
   // --- Bottom panel: partner's incoming message (video OR text) ---
   Widget _buildIncomingPanel() {
     if (_latestIncoming == null) {

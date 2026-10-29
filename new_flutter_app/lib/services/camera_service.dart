@@ -13,18 +13,18 @@ class CameraService {
   bool _isPaused = false;
   bool _isActive = false;
 
-  static const String _baseUrl = 'localhost:8000';
+  static const String _baseUrl = 'https://handy-talk.onrender.com';
   static const Duration recordDuration = Duration(milliseconds: 1500);
   static const Duration gapBetweenAttempts = Duration(milliseconds: 100);
-  static const double minConfidence = 0.45;
+  static const double minConfidence = 0.65;
 
   final Queue<String> _recentPredictions = Queue<String>();
   static const int smoothingWindow = 3;
-  static const int votesNeeded = 1;
+  static const int votesNeeded = 3;
 
   Future<void> initialize() async {
     final cameras = await availableCameras();
-    _controller = CameraController(cameras[0], ResolutionPreset.medium);
+    _controller = CameraController(cameras[0], ResolutionPreset.low);
     await _controller!.initialize();
     isInitialized = true;
     debugPrint('[CameraService] Camera initialized (medium resolution)');
@@ -68,7 +68,7 @@ class CameraService {
 
       final bytes = await clip.readAsBytes();
 
-      if (bytes.length < 5000) {
+      if (bytes.length < 10000) {
         debugPrint('[CameraService] ⚠️ Clip too small — tab likely lost focus. Skipping.');
         _onRawPrediction?.call('Skipped (keep tab focused)', 0.0);
         return;
@@ -76,7 +76,7 @@ class CameraService {
 
       var request = http.MultipartRequest(
         'POST',
-        Uri.parse('http://$_baseUrl/api/predict-sign'),
+        Uri.parse('$_baseUrl/api/predict-sign'),
       );
       request.files.add(
         http.MultipartFile.fromBytes('video', bytes, filename: 'clip.mp4'),
