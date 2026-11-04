@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 import tempfile
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from nlp.gloss_to_english import GlossToEnglish
 from nlp.english_to_gloss import EnglishToGloss
