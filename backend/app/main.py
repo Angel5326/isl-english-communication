@@ -22,7 +22,7 @@ import torch.nn as nn
 import tempfile
 from pathlib import Path
 from typing import Dict, Optional
-import requests # Used for Resend Email API
+import requests
 
 # --- NLP & LLM Imports ---
 from nlp.gloss_to_english import GlossToEnglish
@@ -70,10 +70,10 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
 app = FastAPI(title="ISL-English Real-Time Server")
 
-# --- CORS FIX ---
+# --- CORS SETUP ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://localhost:\d+|https://.*", # Allows local & deployed frontends
+    allow_origin_regex=r"http://localhost:\d+|https://.*", 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -128,7 +128,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
-# --- EMAIL SENDING LOGIC (Resend HTTP API) ---
+# --- EMAIL SENDING LOGIC ---
 def send_otp_email(receiver_email: str, otp: str):
     api_key = os.environ.get("RESEND_API_KEY")
     if not api_key:
@@ -231,19 +231,21 @@ def delete_contact(contact_email: str, current_user: User = Depends(get_current_
     db.commit()
     return {"message": "Contact deleted"}
 
-# --- ISL / LSTM / WEBSOCKET LOGIC ---
+# ==========================================
+# AI / MACHINE LEARNING PIPELINE
+# ==========================================
 gloss_to_english = GlossToEnglish()
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 english_to_gloss = EnglishToGloss()
 mp_hands = mp.solutions.hands
 
-# ACCURACY IMPROVEMENT: Increased confidence
+# SPEED OPTIMIZATION: model_complexity=0 is the fastest
 hands_detector = mp_hands.Hands(
     static_image_mode=False, 
     max_num_hands=2, 
-    model_complexity=1, 
-    min_detection_confidence=0.6, # Increased from 0.5
-    min_tracking_confidence=0.6
+    model_complexity=0, 
+    min_detection_confidence=0.5, 
+    min_tracking_confidence=0.5
 )
 
 SEQ_MODEL_PATH = Path("ml/models/sequence_classifier_normalized.pt")
@@ -285,14 +287,16 @@ def normalize_frame(frame_features: np.ndarray) -> np.ndarray:
 
 def extract_landmarks_from_video(video_path: str) -> np.ndarray:
     cap = cv2.VideoCapture(video_path)
-    frame_count, processed_count = 0, 0
+    frame_count = 0
     sequence = []
     while True:
         ret, frame = cap.read()
         if not ret: break
         frame_count += 1
-        if frame_count % 2 != 0: continue
-        processed_count += 1
+        
+        # SPEED OPTIMIZATION: Skip every 3rd frame
+        if frame_count % 3 != 0: continue
+        
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = hands_detector.process(rgb)
         left, right = [0.0] * 63, [0.0] * 63
@@ -302,7 +306,13 @@ def extract_landmarks_from_video(video_path: str) -> np.ndarray:
                 for lm in hand_landmarks.landmark: coords.extend([lm.x, lm.y, lm.z])
                 if handedness.classification[0].label == "Left": left = coords
                 else: right = coords
+                
         sequence.append(normalize_frame(np.array(left + right, dtype=np.float32)))
+        
+        # SPEED OPTIMIZATION: Early stopping once we have 30 frames
+        if len(sequence) >= 30:
+            break
+            
     cap.release()
     return np.array(sequence, dtype=np.float32)
 
@@ -313,6 +323,9 @@ def resample_sequence(seq: np.ndarray, target_len: int = SEQ_LEN) -> np.ndarray:
     indices = np.linspace(0, n - 1, target_len).astype(int)
     return seq[indices]
 
+# ==========================================
+# SESSION & WEBSOCKET MANAGERS
+# ==========================================
 class SessionManager:
     def __init__(self):
         self.sessions: Dict[str, Dict] = {}
@@ -348,6 +361,12 @@ async def create_session(data: SessionCreate):
     manager.create_session(session_id, data.user_id)
     return {"session_id": session_id}
 
+@app.post("/api/session/invite")
+async def invite_session(contact_email: str, current_user: User = Depends(get_current_user)):
+    session_id = str(random.randint(1000, 9999))
+    manager.create_session(session_id, current_user.email)
+    return {"session_id": session_id, "message": f"Invite sent to {contact_email}"}
+
 @app.post("/api/session/join")
 async def join_session(data: SessionJoin):
     if data.session_id not in manager.sessions: return {"error": "Session not found"}
@@ -359,33 +378,41 @@ async def session_status(session_id: str):
     if session_id not in manager.sessions: return {"error": "Session not found", "user_count": 0}
     return {"user_count": len(manager.connections.get(session_id, {})), "users": list(manager.sessions[session_id]["users"])}
 
+# ==========================================
+# AI PREDICTION ENDPOINTS
+# ==========================================
 @app.post("/api/predict-sign")
 async def predict_sign(video: UploadFile = File(...)):
     if sequence_model is None: return {"gloss": "No model", "confidence": 0.0}
     contents = await video.read()
-    if len(contents) < 5000: return {"gloss": "Video too small", "confidence": 0.0}
+    if len(contents) < 2000: return {"gloss": "Video too small", "confidence": 0.0}
+    
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
+        
     try: raw_seq = extract_landmarks_from_video(tmp_path)
     finally: os.remove(tmp_path)
+    
     if raw_seq.shape[0] == 0: return {"gloss": "No sign", "confidence": 0.0}
+    
     non_zero = np.any(raw_seq != 0, axis=1).sum()
     if non_zero / raw_seq.shape[0] < 0.2: return {"gloss": "No hand", "confidence": 0.0}
     
-    # --- ACCURACY IMPROVEMENT: Motion Detection ---
+    # ACCURACY OPTIMIZATION: Motion Detection
     motion_variance = np.var(raw_seq, axis=0).mean()
-    if motion_variance < 0.0001: # If hand is too still
+    if motion_variance < 0.0001: 
         return {"gloss": "No motion", "confidence": 0.0, "reason": "static_hand"}
-    # ----------------------------------------------
     
     seq = resample_sequence(raw_seq, SEQ_LEN)
     tensor = torch.tensor(seq, dtype=torch.float32).unsqueeze(0)
+    
     with torch.no_grad():
         probs = torch.softmax(sequence_model(tensor), dim=1)[0]
         pred_idx = int(torch.argmax(probs))
         confidence = float(probs[pred_idx])
-    if confidence < 0.6: return {"gloss": "Low confidence", "confidence": round(confidence, 2)} # Increased from 0.4
+        
+    if confidence < 0.50: return {"gloss": "Low confidence", "confidence": round(confidence, 2)}
     return {"gloss": sequence_labels[pred_idx].upper(), "confidence": round(confidence, 2)}
 
 @app.post("/api/translate-gloss")
