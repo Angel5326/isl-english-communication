@@ -190,6 +190,20 @@ def get_contacts(current_user: User = Depends(get_current_user), db: Session = D
     contacts = db.query(Contact).filter(Contact.owner_email == current_user.email).all()
     return [{"name": c.contact_name, "email": c.contact_email} for c in contacts]
 
+@app.delete("/api/contacts/{contact_email}")
+def delete_contact(contact_email: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    contact = db.query(Contact).filter(
+        Contact.owner_email == current_user.email, 
+        Contact.contact_email == contact_email
+    ).first()
+    
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+        
+    db.delete(contact)
+    db.commit()
+    return {"message": "Contact deleted successfully"}
+
 
 # ==========================================
 # YOUR EXISTING ISL / LSTM / WEBSOCKET LOGIC
