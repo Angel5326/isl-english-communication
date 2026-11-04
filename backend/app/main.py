@@ -27,8 +27,35 @@ from nlp.gloss_to_english import GlossToEnglish
 from nlp.english_to_gloss import EnglishToGloss
 from groq import Groq
 
-import smtplib
-from email.message import EmailMessage
+import requests
+
+def send_otp_email(receiver_email: str, otp: str):
+    # Render Environment la RESEND_API_KEY set pannanum
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        print(f"Fallback OTP for {receiver_email} is: {otp}")
+        return
+
+    url = "https://api.resend.com/emails"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "from": "onboarding@resend.dev",  # Resend free testing domain
+        "to": [receiver_email],
+        "subject": "Handy Talk - Verify Your Account",
+        "html": f"<strong>Your OTP is: {otp}</strong>"
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            print(f"✅ Email sent to {receiver_email}")
+        else:
+            print(f"❌ Email failed: {response.text}. Fallback OTP: {otp}")
+    except Exception as e:
+        print(f"❌ Error: {e}. Fallback OTP: {otp}")
 
 # --- DATABASE SETUP ---
 SQLALCHEMY_DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./handytalk.db")
