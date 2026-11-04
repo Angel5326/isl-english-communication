@@ -308,6 +308,8 @@ manager = SessionManager()
 
 class SessionCreate(BaseModel):
     user_id: str
+    session_id: Optional[str] = None # <--- Add this
+
 
 class SessionJoin(BaseModel):
     session_id: str
@@ -315,7 +317,14 @@ class SessionJoin(BaseModel):
 
 @app.post("/api/session/create")
 async def create_session(data: SessionCreate):
-    session_id = str(random.randint(1000, 9999))
+    # If user typed a code, use it. Otherwise, generate a random one.
+    if data.session_id:
+        session_id = data.session_id
+        if session_id in manager.sessions:
+            raise HTTPException(status_code=400, detail="Session code already in use. Try joining instead.")
+    else:
+        session_id = str(random.randint(1000, 9999))
+        
     manager.create_session(session_id, data.user_id)
     return {"session_id": session_id}
 
