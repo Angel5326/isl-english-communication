@@ -13,24 +13,24 @@ class CameraService {
   bool _isPaused = false;
   bool _isActive = false;
 
-  // Use the cloud backend URL
   static const String _baseUrl = 'https://handy-talk.onrender.com';
   
-  // Increased duration to capture full sign
-  static const Duration recordDuration = Duration(milliseconds: 1500);
-  static const Duration gapBetweenAttempts = Duration(milliseconds: 100);
-  static const double minConfidence = 0.60; // Increased confidence
+  // --- OPTIMIZATION 1: Reduced time and resolution for faster upload ---
+  static const Duration recordDuration = Duration(milliseconds: 1000); // 1 second
+  static const Duration gapBetweenAttempts = Duration(milliseconds: 50);
+  static const double minConfidence = 0.50; 
 
   final Queue<String> _recentPredictions = Queue<String>();
   static const int smoothingWindow = 3;
-  static const int votesNeeded = 2; // Requires 2 consecutive predictions
+  static const int votesNeeded = 1; // Set to 1 for faster response
 
   Future<void> initialize() async {
     final cameras = await availableCameras();
-    _controller = CameraController(cameras[0], ResolutionPreset.medium);
+    // Low resolution makes the video file much smaller -> uploads faster
+    _controller = CameraController(cameras[0], ResolutionPreset.low); 
     await _controller!.initialize();
     isInitialized = true;
-    debugPrint('[CameraService] Camera initialized (medium resolution)');
+    debugPrint('[CameraService] Camera initialized (low resolution)');
   }
 
   Widget buildPreview() {
@@ -47,14 +47,13 @@ class CameraService {
     _onPrediction = onPrediction;
     _onRawPrediction = onRawPrediction;
     _isActive = true;
-    debugPrint('[CameraService] startListening called (continuous mode)');
     _runLoop();
   }
 
   Future<void> _runLoop() async {
     while (_isActive) {
       if (_isPaused) {
-        await Future.delayed(const Duration(milliseconds: 300));
+        await Future.delayed(const Duration(milliseconds: 100));
         continue;
       }
       await _recordAndPredict();
@@ -71,9 +70,8 @@ class CameraService {
 
       final bytes = await clip.readAsBytes();
 
-      if (bytes.length < 5000) {
-        debugPrint('[CameraService] ⚠️ Clip too small — tab likely lost focus. Skipping.');
-        _onRawPrediction?.call('Skipped (keep tab focused)', 0.0);
+      if (bytes.length < 2000) {
+        debugPrint('[CameraService] Clip too small, skipping.');
         return;
       }
 
@@ -91,18 +89,10 @@ class CameraService {
         String gloss = data['gloss'] ?? 'No sign detected';
         double confidence = (data['confidence'] ?? 0.0).toDouble();
 
-        // Don't show backend errors as "predictions"
-        if (data['reason'] != null) {
-          _onRawPrediction?.call('Analyzing...', 0.0);
-          return;
-        }
-
         _onRawPrediction?.call(gloss, confidence);
 
         final smoothed = _applySmoothingFilter(gloss, confidence);
         _onPrediction?.call(smoothed);
-      } else {
-        debugPrint('[CameraService] predict-sign failed: ${response.statusCode}');
       }
     } catch (e) {
       debugPrint('[CameraService] Record/predict error: $e');
@@ -125,8 +115,7 @@ class CameraService {
 
     for (final entry in counts.entries) {
       if (entry.value >= votesNeeded) {
-        debugPrint('[CameraService] ✅ Confirmed: ${entry.key}');
-        _recentPredictions.clear(); // Clear history after confirmation
+        _recentPredictions.clear();
         return entry.key;
       }
     }
@@ -134,13 +123,8 @@ class CameraService {
     return 'No sign detected';
   }
 
-  void pause() {
-    _isPaused = true;
-  }
-
-  void resume() {
-    _isPaused = false;
-  }
+  void pause() => _isPaused = true;
+  void resume() => _isPaused = false;
 
   void dispose() {
     _isActive = false;
