@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt; // <--- NEW IMPORT
 import '../services/camera_service.dart';
 
 class ChatDashboard extends StatefulWidget {
@@ -34,8 +35,8 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
   Timer? _statusTimer;
 
   // --- Role State ---
-  bool _isRoleSelected = false; // <--- NEW
-  String _mode = 'sign'; // 'sign' or 'speak'
+  bool _isRoleSelected = false;
+  String _mode = 'sign';
 
   final TextEditingController _joinController = TextEditingController();
   final TextEditingController _textController = TextEditingController();
@@ -61,6 +62,10 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
   int _videoIndex = 0;
   bool _videoNotFound = false;
 
+  // --- Speech to Text ---
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  bool _isListening = false;
+
   // --- Animation Controllers ---
   late AnimationController _scanController;
   late AnimationController _floatController;
@@ -81,6 +86,41 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
 
     _scanController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
     _floatController = AnimationController(vsync: this, duration: const Duration(seconds: 3))..repeat(reverse: true);
+    
+    _initSpeech(); // Initialize Speech
+  }
+
+  // --- SPEECH TO TEXT LOGIC ---
+  void _initSpeech() async {
+    await _speech.initialize(
+      onStatus: (status) {
+        if (status == 'done' || status == 'notListening') {
+          setState(() => _isListening = false);
+        }
+      },
+      onError: (error) => debugPrint('Speech Error: $error'),
+    );
+  }
+
+  void _listen() async {
+    if (!_isListening) {
+      bool available = await _speech.initialize();
+      if (available) {
+        setState(() => _isListening = true);
+        _speech.listen(
+          onResult: (result) {
+            setState(() {
+              _textController.text = result.recognizedWords;
+            });
+          },
+        );
+      } else {
+        _showError('Microphone not available');
+      }
+    } else {
+      setState(() => _isListening = false);
+      _speech.stop();
+    }
   }
 
   // ================= SESSION LOGIC =================
@@ -142,7 +182,6 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
     _startStatusPolling();
   }
 
-  // --- Role Selection Logic ---
   void _selectRole(String role) async {
     setState(() {
       _mode = role;
@@ -168,7 +207,7 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
     _channel!.stream.listen(
       (data) {
         var message = jsonDecode(data) as Map<String, dynamic>;
-        if (message['type'] == 'system') return; // Ignore system messages
+        if (message['type'] == 'system') return;
 
         setState(() => _latestIncoming = message);
         List<String> videos = List<String>.from(message['videos'] ?? []);
@@ -259,6 +298,10 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
     if (_textController.text.trim().isEmpty) return;
     String text = _textController.text.trim();
     _textController.clear();
+    if (_isListening) {
+      _speech.stop();
+      setState(() => _isListening = false);
+    }
 
     try {
       final response = await http.post(
@@ -336,6 +379,7 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
     _joinFocusNode.dispose();
     _scanController.dispose();
     _floatController.dispose();
+    _speech.stop(); // Dispose speech
     super.dispose();
   }
 
@@ -380,7 +424,6 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // SIGN CARD
                   GestureDetector(
                     onTap: () => _selectRole('sign'),
                     child: Container(
@@ -402,7 +445,6 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
                       ),
                     ),
                   ),
-                  // SPEAK CARD
                   GestureDetector(
                     onTap: () => _selectRole('speak'),
                     child: Container(
@@ -433,7 +475,7 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
     );
   }
 
-  // ================= START SCREEN (Create/Join) =================
+  // ================= START SCREEN =================
   Widget _buildStartScreen() {
     return Scaffold(
       body: Container(
@@ -569,20 +611,16 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
   Widget _buildMainScreen() {
     return Scaffold(
       appBar: AppBar(
-  backgroundColor: Colors.transparent,
-  elevation: 0,
-  title: Row(
-    children: [
-      _buildPulsingDot(),
-      const SizedBox(width: 12),
-      Image.asset('assets/images/logo.png', height: 30), // Logo here
-      const SizedBox(width: 12),
-      Text('Room: $_sessionId', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-    ],
-  ),
-  // ... rest of actions
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        title: Row(
+          children: [
+            _buildPulsingDot(),
+            const SizedBox(width: 12),
+            Text('Room: $_sessionId', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
         actions: [
-          // Button to switch roles if needed
           IconButton(
             icon: const Icon(Icons.swap_horiz, color: Colors.white70),
             tooltip: 'Switch Mode',
@@ -611,7 +649,7 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
         children: [
           const SizedBox(height: 16),
           Expanded(
-            flex: 3, // Camera area gets more space now!
+            flex: 3,
             child: _mode == 'sign' 
                 ? _buildSignInput() 
                 : _buildSpeakInput(),
@@ -645,7 +683,7 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
     );
   }
 
-  // --- SIGN INPUT (LONGER & WIDER CAMERA) ---
+  // --- SIGN INPUT ---
   Widget _buildSignInput() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -662,11 +700,10 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
               clipBehavior: Clip.antiAlias,
               child: Stack(
                 children: [
-                  // WIDER CAMERA PREVIEW
                   Positioned.fill(
                     child: _cameraService != null && _cameraService!.isInitialized
                         ? FittedBox(
-                            fit: BoxFit.cover, // Forces camera to fill the box entirely
+                            fit: BoxFit.cover,
                             child: SizedBox(
                               width: 640,
                               height: 480,
@@ -675,8 +712,6 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
                           )
                         : const Center(child: CircularProgressIndicator(color: accentCyan)),
                   ),
-                  
-                  // Holographic Scanner Line
                   AnimatedBuilder(
                     animation: _scanController,
                     builder: (context, child) {
@@ -754,35 +789,84 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
     );
   }
 
-  // --- SPEAK INPUT ---
+  // --- SPEAK INPUT (WITH VOICE OPTION) ---
   Widget _buildSpeakInput() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
         children: [
           Expanded(
-            child: TextField(
-              controller: _textController,
-              maxLines: 5,
-              style: const TextStyle(fontSize: 18, color: Colors.white),
-              decoration: InputDecoration(
-                hintText: 'Type your message in English...',
-                hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
-                filled: true,
-                fillColor: Colors.white.withOpacity(0.05),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
-              ),
+            child: Stack(
+              children: [
+                TextField(
+                  controller: _textController,
+                  maxLines: 5,
+                  style: const TextStyle(fontSize: 18, color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: _isListening ? 'Listening...' : 'Type or speak your message...',
+                    hintStyle: TextStyle(color: _isListening ? accentCyan : Colors.white.withOpacity(0.3)),
+                    filled: true,
+                    fillColor: Colors.white.withOpacity(0.05),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+                  ),
+                ),
+                if (_isListening)
+                  Positioned(
+                    bottom: 16,
+                    right: 16,
+                    child: TweenAnimationBuilder<double>(
+                      tween: Tween(begin: 0.8, end: 1.2),
+                      duration: const Duration(milliseconds: 500),
+                      curve: Curves.easeInOut,
+                      builder: (context, value, child) {
+                        return Transform.scale(
+                          scale: value,
+                          child: const Icon(Icons.graphic_eq, color: Color(0xFF06B6D4), size: 30),
+                        );
+                      },
+                    ),
+                  ),
+              ],
             ),
           ),
           const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity, height: 56,
-            child: ElevatedButton.icon(
-              onPressed: _sendTextMessage,
-              icon: const Icon(Icons.send),
-              label: const Text('Send to Partner', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              style: ElevatedButton.styleFrom(backgroundColor: primaryBlue, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
-            ),
+          Row(
+            children: [
+              // MIC BUTTON
+              Container(
+                height: 56,
+                width: 56,
+                margin: const EdgeInsets.only(right: 12),
+                decoration: BoxDecoration(
+                  color: _isListening ? Colors.redAccent.withOpacity(0.2) : Colors.white.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: _isListening ? Colors.redAccent : Colors.white24),
+                ),
+                child: IconButton(
+                  icon: Icon(
+                    _isListening ? Icons.mic : Icons.mic_none,
+                    color: _isListening ? Colors.redAccent : Colors.white,
+                  ),
+                  onPressed: _listen,
+                ),
+              ),
+              // SEND BUTTON
+              Expanded(
+                child: SizedBox(
+                  height: 56,
+                  child: ElevatedButton.icon(
+                    onPressed: _sendTextMessage,
+                    icon: const Icon(Icons.send),
+                    label: const Text('Send to Partner', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: primaryBlue, 
+                      foregroundColor: Colors.white, 
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
