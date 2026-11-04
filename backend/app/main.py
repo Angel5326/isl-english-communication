@@ -27,6 +27,9 @@ from nlp.gloss_to_english import GlossToEnglish
 from nlp.english_to_gloss import EnglishToGloss
 from groq import Groq
 
+import smtplib
+from email.message import EmailMessage
+
 # --- DATABASE SETUP ---
 SQLALCHEMY_DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./handytalk.db")
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in SQLALCHEMY_DATABASE_URL else {})
@@ -62,6 +65,31 @@ def get_db():
 SECRET_KEY = "handy_talk_super_secret_key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
+
+def send_otp_email(receiver_email: str, otp: str):
+    # Fetch credentials from Render Environment Variables
+    sender_email = os.environ.get("EMAIL_USER")
+    sender_password = os.environ.get("EMAIL_PASS")
+    
+    if not sender_email or not sender_password:
+        print("⚠️ Email credentials not set. OTP is:", otp)
+        return
+
+    msg = EmailMessage()
+    msg.set_content(f"Your Handy Talk verification code is: {otp}\n\nDo not share this code with anyone.")
+    msg['Subject'] = 'Handy Talk - Verify Your Account'
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+
+    try:
+        # Connect to Gmail's SMTP server
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(sender_email, sender_password)
+            smtp.send_message(msg)
+        print(f"✅ OTP Email successfully sent to {receiver_email}")
+    except Exception as e:
+        print(f"❌ Failed to send email: {e}")
+        print(f"Fallback OTP for {receiver_email} is: {otp}")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
@@ -122,29 +150,28 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 def register(user: UserRegister, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
     
+    otp = str(random.randint(100000, 999999))
+    
     if db_user:
         if db_user.is_verified:
             raise HTTPException(status_code=400, detail="Email already registered. Please login.")
         else:
-            # If user exists but is not verified, update their password and issue a new OTP
+            # Update existing unverified user
             db_user.hashed_password = pwd_context.hash(user.password)
             db_user.name = user.name
-            otp = str(random.randint(100000, 999999))
             db_user.otp = otp
             db.commit()
-            print(f"🔐 NEW OTP for {user.email} is: {otp}")
-            return {"message": "Account already existed but was unverified. New OTP sent to logs."}
+            send_otp_email(user.email, otp) # Send real email
+            return {"message": "New OTP sent to your email."}
 
-    # If completely new user
+    # Create new user
     hashed_pw = pwd_context.hash(user.password)
-    otp = str(random.randint(100000, 999999))
-    
     new_user = User(name=user.name, email=user.email, hashed_password=hashed_pw, otp=otp)
     db.add(new_user)
     db.commit()
     
-    print(f"🔐 OTP for {user.email} is: {otp}")
-    return {"message": "User registered. Please check Render logs for OTP."}
+    send_otp_email(user.email, otp) # Send real email
+    return {"message": "User registered. Please check your email for OTP."}
 
 @app.post("/api/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
