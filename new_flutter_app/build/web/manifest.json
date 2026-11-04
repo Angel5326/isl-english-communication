@@ -1,11 +1,11 @@
 {
-    "name": "new_flutter_app",
-    "short_name": "new_flutter_app",
+    "name": "HANDY TALK",
+    "short_name": "HANDY TALK",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#0B0F19",
+    "theme_color": "#0B0F19",
+    "description": "Bridging Hearts Across Words and Signs",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
