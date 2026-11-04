@@ -24,7 +24,7 @@ class CameraService {
 
   Future<void> initialize() async {
     final cameras = await availableCameras();
-    _controller = CameraController(cameras[0], ResolutionPreset.low);
+    _controller = CameraController(cameras[0], ResolutionPreset.medium);
     await _controller!.initialize();
     isInitialized = true;
     debugPrint('[CameraService] Camera initialized (medium resolution)');

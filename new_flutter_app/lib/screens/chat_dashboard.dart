@@ -1,21 +1,29 @@
-import 'package:flutter/material.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'dart:convert';
 import 'dart:async';
+import 'dart:ui';
+import 'package:flutter/material.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
 import '../services/camera_service.dart';
 
 class ChatDashboard extends StatefulWidget {
-  const ChatDashboard({super.key});
+  final String? initialSessionId;
+  
+  const ChatDashboard({super.key, this.initialSessionId});
 
   @override
   State<ChatDashboard> createState() => _ChatDashboardState();
 }
 
-class _ChatDashboardState extends State<ChatDashboard> {
-  // --- Base URL for the cloud backend ---
+class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateMixin {
   static const String _baseUrl = 'https://handy-talk.onrender.com';
+
+  // --- Colors ---
+  static const Color bgColor = Color(0xFF0B0F19);
+  static const Color primaryBlue = Color(0xFF6366F1);
+  static const Color accentCyan = Color(0xFF06B6D4);
+  static const Color successGreen = Color(0xFF10B981);
 
   // --- Session state ---
   String _sessionId = '';
@@ -25,58 +33,81 @@ class _ChatDashboardState extends State<ChatDashboard> {
   int _userCount = 1;
   Timer? _statusTimer;
 
-  // --- Mode: 'sign' (camera in, video out) or 'speak' (text in, text out) ---
-  String _mode = 'sign';
+  // --- Role State ---
+  bool _isRoleSelected = false; // <--- NEW
+  String _mode = 'sign'; // 'sign' or 'speak'
 
   final TextEditingController _joinController = TextEditingController();
   final TextEditingController _textController = TextEditingController();
+  final FocusNode _joinFocusNode = FocusNode();
 
   WebSocketChannel? _channel;
 
   // --- Sign detection ---
   CameraService? _cameraService;
   String _predictedGloss = 'Waiting...';
-
-    // --- Sentence Building ---
+  
+  // --- Sentence Building ---
   List<String> _sentenceWords = [];
   String _lastDetectedWord = '';
   DateTime _lastDetectionTime = DateTime.now();
 
-  // --- Incoming message from partner (drives the bottom panel) ---
+  // --- Incoming message ---
   Map<String, dynamic>? _latestIncoming;
 
-  // --- Embedded video playback for incoming "speak" messages ---
+  // --- Video playback ---
   VideoPlayerController? _videoController;
   List<String> _videoQueue = [];
   int _videoIndex = 0;
   bool _videoNotFound = false;
 
+  // --- Animation Controllers ---
+  late AnimationController _scanController;
+  late AnimationController _floatController;
+
   @override
   void initState() {
     super.initState();
     _userId = 'user_${DateTime.now().millisecondsSinceEpoch}';
-    debugPrint('ChatDashboard started, userId=$_userId');
+    
+    if (widget.initialSessionId != null) {
+      _sessionId = widget.initialSessionId!;
+      _isConnected = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _connectWebSocket();
+        _startStatusPolling();
+      });
+    }
+
+    _scanController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
+    _floatController = AnimationController(vsync: this, duration: const Duration(seconds: 3))..repeat(reverse: true);
   }
 
-  // ================= SESSION =================
+  // ================= SESSION LOGIC =================
 
   Future<void> _createNewSession() async {
     setState(() => _isJoining = true);
+    String customCode = _joinController.text.trim();
+
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/session/create'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'user_id': _userId}),
+        body: jsonEncode({
+          'user_id': _userId,
+          'session_id': customCode.isNotEmpty ? customCode : null,
+        }),
       );
-      debugPrint('create-session: ${response.statusCode} ${response.body}');
+      
       if (response.statusCode == 200) {
         var data = jsonDecode(response.body);
         await _enterSession(data['session_id']);
       } else {
-        _showError('Failed to create session: ${response.body}');
+        var error = jsonDecode(response.body);
+        _showError(error['detail'] ?? 'Failed to create session');
       }
     } catch (e) {
-      _showError('Error creating session: $e');
+      _showError('Error: $e');
     } finally {
       if (mounted) setState(() => _isJoining = false);
     }
@@ -86,18 +117,17 @@ class _ChatDashboardState extends State<ChatDashboard> {
     setState(() => _isJoining = true);
     try {
       final response = await http.post(
-        Uri.parse('$_baseUrl/api/session/join'), // <--- FIXED: Added missing comma
+        Uri.parse('$_baseUrl/api/session/join'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'session_id': sessionId, 'user_id': _userId}),
       );
-      debugPrint('join-session: ${response.statusCode} ${response.body}');
       if (response.statusCode == 200) {
         await _enterSession(sessionId);
       } else {
-        _showError('Failed to join session: ${response.body}');
+        _showError('Failed to join session');
       }
     } catch (e) {
-      _showError('Error joining session: $e');
+      _showError('Error: $e');
     } finally {
       if (mounted) setState(() => _isJoining = false);
     }
@@ -110,50 +140,45 @@ class _ChatDashboardState extends State<ChatDashboard> {
     });
     _connectWebSocket();
     _startStatusPolling();
-    await _initCameraIfNeeded();
+  }
+
+  // --- Role Selection Logic ---
+  void _selectRole(String role) async {
+    setState(() {
+      _mode = role;
+      _isRoleSelected = true;
+    });
+    
+    if (_mode == 'sign') {
+      await _initCameraIfNeeded();
+    }
   }
 
   void _showError(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: Colors.redAccent, behavior: SnackBarBehavior.floating)
+    );
   }
 
   // ================= WEBSOCKET =================
 
   void _connectWebSocket() {
-    _channel = WebSocketChannel.connect(
-      // <--- FIXED: Changed 'ri' to 'Uri', added underscores to sessionId and userId
-      Uri.parse('wss://handy-talk.onrender.com/ws/$_sessionId/$_userId'),
-    );
+    _channel = WebSocketChannel.connect(Uri.parse('wss://handy-talk.onrender.com/ws/$_sessionId/$_userId'));
     _channel!.stream.listen(
       (data) {
         var message = jsonDecode(data) as Map<String, dynamic>;
-        debugPrint('Received: $message');
-        if (message['type'] == 'system') {
-          _showError(message['text'] ?? 'System message');
-          return;
-        }
-        // A real partner message (kind: sign / speak)
+        if (message['type'] == 'system') return; // Ignore system messages
+
         setState(() => _latestIncoming = message);
         List<String> videos = List<String>.from(message['videos'] ?? []);
         if (message['kind'] == 'speak' && videos.isNotEmpty) {
-          List<String> words = (message['gloss'] as String? ?? '')
-              .split(' ')
-              .where((w) => w.isNotEmpty)
-              .toList();
-          if (words.isEmpty) {
-            words = videos.map((v) => v.replaceAll('.mp4', '')).toList();
-          }
+          List<String> words = (message['gloss'] as String? ?? '').split(' ').where((w) => w.isNotEmpty).toList();
           _playVideoSequence(words);
         }
       },
-      onError: (error) {
-        debugPrint('WebSocket error: $error');
-        setState(() => _isConnected = false);
-      },
-      onDone: () {
-        setState(() => _isConnected = false);
-      },
+      onError: (error) => setState(() => _isConnected = false),
+      onDone: () => setState(() => _isConnected = false),
     );
   }
 
@@ -162,27 +187,20 @@ class _ChatDashboardState extends State<ChatDashboard> {
     _channel!.sink.add(jsonEncode(message));
   }
 
-  // ================= STATUS POLLING =================
-
   void _startStatusPolling() {
     _statusTimer?.cancel();
     _statusTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       try {
-        final response = await http.get(
-          // <--- FIXED: Removed 'http://' before '$_baseUrl'
-          Uri.parse('$_baseUrl/api/session/$_sessionId/status'),
-        );
+        final response = await http.get(Uri.parse('$_baseUrl/api/session/$_sessionId/status'));
         if (response.statusCode == 200) {
           var data = jsonDecode(response.body);
           if (mounted) setState(() => _userCount = data['user_count'] ?? 1);
         }
-      } catch (_) {
-        // ignore transient polling errors
-      }
+      } catch (_) {}
     });
   }
 
-  // ================= SIGN MODE: camera → gloss → english =================
+  // ================= SIGN MODE =================
 
   Future<void> _initCameraIfNeeded() async {
     if (_cameraService != null) return;
@@ -192,64 +210,50 @@ class _ChatDashboardState extends State<ChatDashboard> {
       _cameraService!.startListening(_onGlossDetected);
       if (mounted) setState(() {});
     } catch (e) {
-      debugPrint('Camera init failed: $e');
       _showError('Camera error: $e');
     }
   }
 
-      Future<void> _onGlossDetected(String gloss) async {
+  Future<void> _onGlossDetected(String gloss) async {
     if (!mounted) return;
+    if (gloss == 'Waiting...' || gloss == 'No sign detected' || gloss.startsWith('Skipped')) return;
 
-    // 1. Ignore junk messages completely so they don't overwrite the screen
-    if (gloss == 'Waiting...' || gloss == 'No sign detected' || gloss.startsWith('Skipped')) {
-      return; 
-    }
-
-    // 2. Only update the UI if a real word was detected
-    setState(() => _predictedGloss = gloss);
-    
-    // ... rest of the code ...
-
-    // --- DUPLICATE PREVENTION ---
-    // If the camera detects the same word again within 2.5 seconds, ignore it.
-    // This prevents "HELLO HELLO HELLO" when the user holds a sign.
     final now = DateTime.now();
-    if (gloss == _lastDetectedWord && now.difference(_lastDetectionTime).inMilliseconds < 2500) {
-      return; 
-    }
+    if (gloss == _lastDetectedWord && now.difference(_lastDetectionTime).inMilliseconds < 2500) return;
+    
     _lastDetectedWord = gloss;
     _lastDetectionTime = now;
 
-    // Translate the gloss to English
-    String english = gloss;
+    setState(() {
+      _predictedGloss = gloss;
+      _sentenceWords.add(gloss.toUpperCase());
+    });
+
+    String fullGlossSentence = _sentenceWords.join(' ');
+    String english = fullGlossSentence;
+
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/translate-gloss'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'gloss': gloss}),
+        body: jsonEncode({'gloss': fullGlossSentence}),
       );
       if (response.statusCode == 200) {
-        english = jsonDecode(response.body)['english'] ?? gloss;
+        english = jsonDecode(response.body)['english'] ?? fullGlossSentence;
       }
     } catch (e) {
       debugPrint('translate-gloss error: $e');
     }
 
-    // --- BUILD THE SENTENCE ---
-    setState(() {
-      _sentenceWords.add(english.toUpperCase()); 
-    });
-
-    // Send the accumulated sentence to the other phone
     _sendRaw({
       'kind': 'sign',
-      'gloss': gloss,
-      'english': _sentenceWords.join(' '), // This joins the words with spaces!
+      'gloss': fullGlossSentence,
+      'english': english,
       'timestamp': DateTime.now().toIso8601String(),
     });
   }
 
-  // ================= SPEAK MODE: text → gloss → video list =================
+  // ================= SPEAK MODE =================
 
   Future<void> _sendTextMessage() async {
     if (_textController.text.trim().isEmpty) return;
@@ -258,7 +262,6 @@ class _ChatDashboardState extends State<ChatDashboard> {
 
     try {
       final response = await http.post(
-        // <--- FIXED: Removed 'http://' before '$_baseUrl'
         Uri.parse('$_baseUrl/api/english-to-isl'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'text': text}),
@@ -278,12 +281,11 @@ class _ChatDashboardState extends State<ChatDashboard> {
         'timestamp': DateTime.now().toIso8601String(),
       });
     } catch (e) {
-      debugPrint('english-to-isl error: $e');
       _showError('Error sending: $e');
     }
   }
 
-  // ================= EMBEDDED VIDEO PLAYBACK (incoming) =================
+  // ================= VIDEO PLAYBACK =================
 
   void _playVideoSequence(List<String> glossWords) {
     _videoController?.dispose();
@@ -294,31 +296,19 @@ class _ChatDashboardState extends State<ChatDashboard> {
     _playNextVideo();
   }
 
-    void _playNextVideo() {
-    // If the queue is empty, do nothing
+  void _playNextVideo() {
     if (_videoQueue.isEmpty) return;
-
-    // If we reach the end of the queue, loop back to the beginning!
-    if (_videoIndex >= _videoQueue.length) {
-      _videoIndex = 0; 
-    }
+    if (_videoIndex >= _videoQueue.length) _videoIndex = 0;
     
     String word = _videoQueue[_videoIndex];
-    
     _tryLoadVideo('assets/videos/$word.mp4', () {
       _tryLoadVideo('assets/videos/${word.toLowerCase()}.mp4', () {
-        setState(() {
-          _videoNotFound = true;
-          _videoIndex++;
-        });
-        // A tiny delay prevents the app from freezing if a video is missing
-        Future.delayed(const Duration(milliseconds: 500), () {
-          if (mounted) _playNextVideo();
-        });
+        setState(() { _videoNotFound = true; _videoIndex++; });
+        Future.delayed(const Duration(milliseconds: 500), () { if (mounted) _playNextVideo(); });
       });
     });
   }
-  
+
   void _tryLoadVideo(String assetPath, VoidCallback onFail) {
     final controller = VideoPlayerController.asset(assetPath);
     controller.initialize().then((_) {
@@ -330,14 +320,9 @@ class _ChatDashboardState extends State<ChatDashboard> {
       });
       controller.play();
       controller.addListener(() {
-        if (controller.value.isCompleted) {
-          _videoIndex++;
-          _playNextVideo();
-        }
+        if (controller.value.isCompleted) { _videoIndex++; _playNextVideo(); }
       });
-    }).catchError((_) {
-      onFail();
-    });
+    }).catchError((_) => onFail());
   }
 
   @override
@@ -348,64 +333,99 @@ class _ChatDashboardState extends State<ChatDashboard> {
     _videoController?.dispose();
     _textController.dispose();
     _joinController.dispose();
+    _joinFocusNode.dispose();
+    _scanController.dispose();
+    _floatController.dispose();
     super.dispose();
   }
 
-  // ================= UI =================
+  // ================= UI ROUTING =================
 
   @override
   Widget build(BuildContext context) {
-    if (_sessionId.isEmpty) return _buildStartScreen();
-    return _buildMainScreen();
+    return Theme(
+      data: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: bgColor,
+        colorScheme: const ColorScheme.dark().copyWith(
+          primary: primaryBlue,
+          secondary: accentCyan,
+        ),
+      ),
+      child: _sessionId.isEmpty 
+          ? _buildStartScreen() 
+          : (!_isRoleSelected ? _buildRoleSelectionScreen() : _buildMainScreen()),
+    );
   }
 
-  Widget _buildStartScreen() {
+  // ================= ROLE SELECTION SCREEN =================
+  Widget _buildRoleSelectionScreen() {
     return Scaffold(
-      appBar: AppBar(title: const Text('ISL Communication')),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF0B0F19), Color(0xFF17153B)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: Center(
           child: Column(
-            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text('Join Communication Session',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 16),
-              const Text('Enter a Session ID to join, or create a new one:'),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _joinController,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'e.g. 7384',
-                ),
+              const Text(
+                'How do you want to communicate?',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
               ),
-              const SizedBox(height: 20),
-              if (_isJoining) const CircularProgressIndicator(),
-              if (!_isJoining) ...[
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () {
-                      String sid = _joinController.text.trim();
-                      if (sid.isNotEmpty) {
-                        _joinSession(sid);
-                      } else {
-                        _showError('Enter a session ID, or tap "Create New" below.');
-                      }
-                    },
-                    child: const Text('Join Session'),
+              const SizedBox(height: 40),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // SIGN CARD
+                  GestureDetector(
+                    onTap: () => _selectRole('sign'),
+                    child: Container(
+                      width: 150,
+                      height: 200,
+                      margin: const EdgeInsets.symmetric(horizontal: 16),
+                      decoration: BoxDecoration(
+                        color: primaryBlue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(color: primaryBlue, width: 2),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.sign_language, size: 60, color: primaryBlue),
+                          SizedBox(height: 16),
+                          Text('I want to Sign', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 10),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton(
-                    onPressed: _createNewSession,
-                    child: const Text('Create New Session'),
+                  // SPEAK CARD
+                  GestureDetector(
+                    onTap: () => _selectRole('speak'),
+                    child: Container(
+                      width: 150,
+                      height: 200,
+                      margin: const EdgeInsets.symmetric(horizontal: 16),
+                      decoration: BoxDecoration(
+                        color: accentCyan.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(color: accentCyan, width: 2),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.text_fields, size: 60, color: accentCyan),
+                          SizedBox(height: 16),
+                          Text('I want to Speak', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              )
             ],
           ),
         ),
@@ -413,65 +433,302 @@ class _ChatDashboardState extends State<ChatDashboard> {
     );
   }
 
+  // ================= START SCREEN (Create/Join) =================
+  Widget _buildStartScreen() {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF0B0F19), Color(0xFF17153B), Color(0xFF0B0F19)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24.0),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(32),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                child: Container(
+                  width: double.infinity,
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  padding: const EdgeInsets.all(40),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.03),
+                    borderRadius: BorderRadius.circular(32),
+                    border: Border.all(color: Colors.white.withOpacity(0.1), width: 1.5),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      AnimatedBuilder(
+                        animation: _floatController,
+                        builder: (context, child) {
+                          return Transform.translate(
+                            offset: Offset(0, -8 + (8 * _floatController.value)),
+                            child: child,
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: primaryBlue.withOpacity(0.1),
+                            boxShadow: [
+                              BoxShadow(color: primaryBlue.withOpacity(0.2), blurRadius: 30, spreadRadius: 10)
+                            ],
+                          ),
+                          child: const Icon(Icons.sign_language, size: 60, color: primaryBlue),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      const Text('Handy Talk', style: TextStyle(fontSize: 34, fontWeight: FontWeight.w900, letterSpacing: 1.5, color: Colors.white)),
+                      const SizedBox(height: 8),
+                      Text('Real-time ISL Communication', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 16, letterSpacing: 1.2)),
+                      const SizedBox(height: 48),
+                      TextField(
+                        controller: _joinController,
+                        focusNode: _joinFocusNode,
+                        textAlign: TextAlign.center,
+                        keyboardType: TextInputType.number,
+                        maxLength: 4,
+                        style: const TextStyle(fontSize: 32, letterSpacing: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                        decoration: InputDecoration(
+                          counterText: "",
+                          hintText: '----',
+                          hintStyle: TextStyle(color: Colors.white.withOpacity(0.1), letterSpacing: 16),
+                          filled: true,
+                          fillColor: Colors.black.withOpacity(0.4),
+                          contentPadding: const EdgeInsets.symmetric(vertical: 20),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(20),
+                            borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(20),
+                            borderSide: const BorderSide(color: accentCyan, width: 2),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 32),
+                      if (_isJoining)
+                        const CircularProgressIndicator(color: accentCyan)
+                      else ...[
+                        SizedBox(
+                          width: double.infinity,
+                          height: 56,
+                          child: ElevatedButton(
+                            onPressed: () {
+                              String sid = _joinController.text.trim();
+                              if (sid.length == 4) {
+                                _joinFocusNode.unfocus();
+                                _joinSession(sid);
+                              } else {
+                                _showError('Please enter a 4-digit code');
+                              }
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: primaryBlue,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                            ),
+                            child: const Text('Join Session', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 56,
+                          child: OutlinedButton(
+                            onPressed: _createNewSession,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              side: const BorderSide(color: accentCyan, width: 1.5),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                              backgroundColor: accentCyan.withOpacity(0.05),
+                            ),
+                            child: const Text('Create New Session', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                      ]
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ================= MAIN SCREEN =================
+
   Widget _buildMainScreen() {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Session: $_sessionId  •  $_userCount connected'),
+  backgroundColor: Colors.transparent,
+  elevation: 0,
+  title: Row(
+    children: [
+      _buildPulsingDot(),
+      const SizedBox(width: 12),
+      Image.asset('assets/images/logo.png', height: 30), // Logo here
+      const SizedBox(width: 12),
+      Text('Room: $_sessionId', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+    ],
+  ),
+  // ... rest of actions
         actions: [
-          Icon(_isConnected ? Icons.wifi : Icons.wifi_off),
-          const SizedBox(width: 8),
+          // Button to switch roles if needed
           IconButton(
-            icon: const Icon(Icons.share),
+            icon: const Icon(Icons.swap_horiz, color: Colors.white70),
+            tooltip: 'Switch Mode',
             onPressed: () {
-              showDialog(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Share Session'),
-                  content: Text('Give this code to the other person:\n\n$_sessionId'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
-                  ],
-                ),
-              );
+              setState(() {
+                _isRoleSelected = false;
+                if (_mode == 'sign') _cameraService?.pause();
+              });
             },
+          ),
+          Container(
+            margin: const EdgeInsets.only(right: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(color: Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
+            child: Row(
+              children: [
+                const Icon(Icons.people, size: 16, color: Colors.white70),
+                const SizedBox(width: 6),
+                Text('$_userCount', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ],
+            ),
           ),
         ],
       ),
       body: Column(
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 'sign', label: Text('Sign')),
-                ButtonSegment(value: 'speak', label: Text('Speak')),
+          const SizedBox(height: 16),
+          Expanded(
+            flex: 3, // Camera area gets more space now!
+            child: _mode == 'sign' 
+                ? _buildSignInput() 
+                : _buildSpeakInput(),
+          ),
+          const SizedBox(height: 16),
+          Expanded(
+            flex: 2,
+            child: _buildIncomingPanel(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPulsingDot() {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.5, end: 1.0),
+      duration: const Duration(milliseconds: 800),
+      curve: Curves.easeInOut,
+      builder: (context, value, child) {
+        return Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: (_isConnected ? successGreen : Colors.redAccent).withOpacity(value),
+            boxShadow: [BoxShadow(color: (_isConnected ? successGreen : Colors.redAccent).withOpacity(0.5 * value), blurRadius: 10, spreadRadius: 2)],
+          ),
+        );
+      },
+    );
+  }
+
+  // --- SIGN INPUT (LONGER & WIDER CAMERA) ---
+  Widget _buildSignInput() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        children: [
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: accentCyan.withOpacity(0.3), width: 2),
+                boxShadow: [BoxShadow(color: accentCyan.withOpacity(0.1), blurRadius: 20, spreadRadius: 2)],
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Stack(
+                children: [
+                  // WIDER CAMERA PREVIEW
+                  Positioned.fill(
+                    child: _cameraService != null && _cameraService!.isInitialized
+                        ? FittedBox(
+                            fit: BoxFit.cover, // Forces camera to fill the box entirely
+                            child: SizedBox(
+                              width: 640,
+                              height: 480,
+                              child: _cameraService!.buildPreview(),
+                            ),
+                          )
+                        : const Center(child: CircularProgressIndicator(color: accentCyan)),
+                  ),
+                  
+                  // Holographic Scanner Line
+                  AnimatedBuilder(
+                    animation: _scanController,
+                    builder: (context, child) {
+                      return Positioned(
+                        top: _scanController.value * 400,
+                        left: 0,
+                        right: 0,
+                        child: Container(
+                          height: 2,
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(colors: [Colors.transparent, accentCyan.withOpacity(0.8), Colors.transparent]),
+                            boxShadow: [BoxShadow(color: accentCyan.withOpacity(0.5), blurRadius: 10, spreadRadius: 2)],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  _buildCornerBracket(Alignment.topLeft),
+                  _buildCornerBracket(Alignment.topRight),
+                  _buildCornerBracket(Alignment.bottomLeft),
+                  _buildCornerBracket(Alignment.bottomRight),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.05),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: _predictedGloss != 'Waiting...' ? successGreen.withOpacity(0.5) : Colors.transparent),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    'Detected: $_predictedGloss',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: _predictedGloss != 'Waiting...' ? successGreen : Colors.white54),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh, color: Colors.redAccent),
+                  onPressed: () {
+                    setState(() { _sentenceWords.clear(); _predictedGloss = 'Waiting...'; _lastDetectedWord = ''; });
+                    _sendRaw({'kind': 'sign', 'gloss': '', 'english': '', 'timestamp': DateTime.now().toIso8601String()});
+                  },
+                ),
               ],
-              selected: {_mode},
-              onSelectionChanged: (set) {
-                setState(() => _mode = set.first);
-                if (_mode == 'sign') {
-                  _cameraService?.resume();
-                } else {
-                  _cameraService?.pause();
-                }
-              },
-            ),
-          ),
-          // TOP: input area
-          Expanded(
-            flex: 1,
-            child: Container(
-              color: Colors.grey[100],
-              child: _mode == 'sign' ? _buildSignInput() : _buildSpeakInput(),
-            ),
-          ),
-          const Divider(height: 2, color: Colors.blue),
-          // BOTTOM: partner's incoming message
-          Expanded(
-            flex: 1,
-            child: Container(
-              color: Colors.white,
-              child: _buildIncomingPanel(),
             ),
           ),
         ],
@@ -479,160 +736,141 @@ class _ChatDashboardState extends State<ChatDashboard> {
     );
   }
 
-  // --- Top panel: Sign mode (your camera) ---
-    Widget _buildSignInput() {
-    return Column(
-      children: [
-        Expanded(
-          child: _cameraService != null && _cameraService!.isInitialized
-              ? _cameraService!.buildPreview()
-              : const Center(child: CircularProgressIndicator()),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          color: Colors.blue[50],
-          width: double.infinity,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                child: Text(
-                  'Detected: $_predictedGloss',
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              // --- NEW CLEAR BUTTON ---
-              TextButton.icon(
-                onPressed: () {
-                  setState(() {
-                    _sentenceWords.clear();
-                    _predictedGloss = 'Waiting...';
-                    _lastDetectedWord = '';
-                  });
-                  // Send a clear signal to the partner
-                  _sendRaw({
-                    'kind': 'sign',
-                    'gloss': '',
-                    'english': '',
-                    'timestamp': DateTime.now().toIso8601String(),
-                  });
-                },
-                icon: const Icon(Icons.refresh, size: 18),
-                label: const Text('Clear'),
-                style: TextButton.styleFrom(foregroundColor: Colors.red),
-              ),
-            ],
+  Widget _buildCornerBracket(Alignment alignment) {
+    return Align(
+      alignment: alignment,
+      child: Container(
+        width: 30, height: 30,
+        margin: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          border: Border(
+            top: alignment == Alignment.topLeft || alignment == Alignment.topRight ? const BorderSide(color: accentCyan, width: 3) : BorderSide.none,
+            bottom: alignment == Alignment.bottomLeft || alignment == Alignment.bottomRight ? const BorderSide(color: accentCyan, width: 3) : BorderSide.none,
+            left: alignment == Alignment.topLeft || alignment == Alignment.bottomLeft ? const BorderSide(color: accentCyan, width: 3) : BorderSide.none,
+            right: alignment == Alignment.topRight || alignment == Alignment.bottomRight ? const BorderSide(color: accentCyan, width: 3) : BorderSide.none,
           ),
         ),
-      ],
+      ),
     );
   }
 
-    // --- Top panel: Speak mode (text/voice input) ---
+  // --- SPEAK INPUT ---
   Widget _buildSpeakInput() {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
         children: [
           Expanded(
             child: TextField(
               controller: _textController,
-              maxLines: 4,
-              decoration: const InputDecoration(
+              maxLines: 5,
+              style: const TextStyle(fontSize: 18, color: Colors.white),
+              decoration: InputDecoration(
                 hintText: 'Type your message in English...',
-                border: OutlineInputBorder(),
+                hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+                filled: true,
+                fillColor: Colors.white.withOpacity(0.05),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
               ),
             ),
           ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _sendTextMessage,
-                  icon: const Icon(Icons.send),
-                  label: const Text('Send'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    _showError('Voice input coming soon — type for now.');
-                  },
-                  icon: const Icon(Icons.mic),
-                  label: const Text('Voice'),
-                ),
-              ),
-            ],
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity, height: 56,
+            child: ElevatedButton.icon(
+              onPressed: _sendTextMessage,
+              icon: const Icon(Icons.send),
+              label: const Text('Send to Partner', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(backgroundColor: primaryBlue, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
+            ),
           ),
         ],
       ),
     );
   }
-  
-  // --- Bottom panel: partner's incoming message (video OR text) ---
+
+  // --- INCOMING PANEL ---
   Widget _buildIncomingPanel() {
-    if (_latestIncoming == null) {
-      return const Center(
-        child: Text('Waiting for a message from your partner...',
-            style: TextStyle(color: Colors.grey)),
-      );
-    }
-
-    String kind = _latestIncoming!['kind'] ?? '';
-
-    // Partner typed/spoke -> show their ISL video
-    if (kind == 'speak') {
-      return Column(
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(8),
-            color: Colors.green[50],
-            child: Text(
-              'Partner said: "${_latestIncoming!['text'] ?? ''}"',
-              textAlign: TextAlign.center,
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.02),
+        borderRadius: const BorderRadius.only(topLeft: Radius.circular(32), topRight: Radius.circular(32)),
+        border: Border.all(color: Colors.white.withOpacity(0.05)),
+      ),
+      child: ClipRRect(
+        borderRadius: const BorderRadius.only(topLeft: Radius.circular(32), topRight: Radius.circular(32)),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 600),
+              switchInCurve: Curves.easeOutQuint,
+              switchOutCurve: Curves.easeInQuint,
+              transitionBuilder: (Widget child, Animation<double> animation) {
+                return SlideTransition(
+                  position: Tween<Offset>(begin: const Offset(0, 0.2), end: Offset.zero).animate(animation),
+                  child: FadeTransition(opacity: animation, child: child),
+                );
+              },
+              child: _latestIncoming == null ? _buildWaitingState() : _buildIncomingContent(_latestIncoming!),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWaitingState() {
+    return Center(
+      key: const ValueKey('waiting'),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.hourglass_empty, size: 48, color: Colors.white.withOpacity(0.2)),
+          const SizedBox(height: 16),
+          Text('Waiting for partner...', style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 16)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIncomingContent(Map<String, dynamic> message) {
+    String kind = message['kind'] ?? '';
+    
+    if (kind == 'speak') {
+      return Column(
+        key: ValueKey(message['timestamp']),
+        children: [
+          Text('Partner said: "${message['text'] ?? ''}"', style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 15, fontStyle: FontStyle.italic)),
+          const SizedBox(height: 16),
           Expanded(
             child: Center(
               child: _videoController != null && _videoController!.value.isInitialized
-                  ? AspectRatio(
-                      aspectRatio: _videoController!.value.aspectRatio,
-                      child: VideoPlayer(_videoController!),
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: AspectRatio(aspectRatio: _videoController!.value.aspectRatio, child: VideoPlayer(_videoController!)),
                     )
-                  : _videoNotFound
-                      ? const Text('Video not available for this word')
-                      : const CircularProgressIndicator(),
+                  : _videoNotFound ? const Text('Video not available', style: TextStyle(color: Colors.redAccent)) : const CircularProgressIndicator(color: accentCyan),
             ),
           ),
         ],
       );
     }
 
-    // Partner signed -> show gloss/English text
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.sign_language, size: 40, color: Colors.green),
-            const SizedBox(height: 12),
-            Text(
-              _latestIncoming!['english'] ?? _latestIncoming!['gloss'] ?? '',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Gloss: ${_latestIncoming!['gloss'] ?? ''}',
-              style: TextStyle(color: Colors.grey[600]),
-            ),
-          ],
-        ),
+      key: ValueKey(message['timestamp']),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(shape: BoxShape.circle, color: successGreen.withOpacity(0.1)), child: const Icon(Icons.sign_language, size: 48, color: successGreen)),
+          const SizedBox(height: 16),
+          Text(message['english'] ?? message['gloss'] ?? '', textAlign: TextAlign.center, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
+          const SizedBox(height: 12),
+          Text('Raw Gloss: ${message['gloss'] ?? ''}', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 14)),
+        ],
       ),
     );
   }
