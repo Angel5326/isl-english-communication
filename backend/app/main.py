@@ -123,18 +123,18 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
     
     if db_user:
-    if db_user.is_verified:
-        raise HTTPException(status_code=400, detail="Email already registered. Please login.")
-    else:
-        # Update password and generate NEW OTP
-        db_user.hashed_password = pwd_context.hash(user.password)
-        db_user.name = user.name
-        otp = str(random.randint(100000, 999999))
-        db_user.otp = otp
-        db.commit()
-        print(f"🔐 NEW OTP for {user.email} is: {otp}")
-        return {"message": "New OTP generated."}
-    
+        if db_user.is_verified:
+            raise HTTPException(status_code=400, detail="Email already registered. Please login.")
+        else:
+            # If user exists but is not verified, update their password and issue a new OTP
+            db_user.hashed_password = pwd_context.hash(user.password)
+            db_user.name = user.name
+            otp = str(random.randint(100000, 999999))
+            db_user.otp = otp
+            db.commit()
+            print(f"🔐 NEW OTP for {user.email} is: {otp}")
+            return {"message": "Account already existed but was unverified. New OTP sent to logs."}
+
     # If completely new user
     hashed_pw = pwd_context.hash(user.password)
     otp = str(random.randint(100000, 999999))
@@ -144,7 +144,7 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
     db.commit()
     
     print(f"🔐 OTP for {user.email} is: {otp}")
-    return {"message": "User registered. Please check Render logs for OTP."}}
+    return {"message": "User registered. Please check Render logs for OTP."}
 
 @app.post("/api/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
