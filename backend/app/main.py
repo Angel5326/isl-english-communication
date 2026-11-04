@@ -308,16 +308,21 @@ manager = SessionManager()
 
 class SessionCreate(BaseModel):
     user_id: str
+
 class SessionJoin(BaseModel):
     session_id: str
     user_id: str
+
+@app.post("/api/session/create")
+async def create_session(data: SessionCreate):
+    session_id = str(random.randint(1000, 9999))
+    manager.create_session(session_id, data.user_id)
+    return {"session_id": session_id}
 
 @app.post("/api/session/invite")
 async def invite_session(contact_email: str, current_user: User = Depends(get_current_user)):
     session_id = str(random.randint(1000, 9999))
     manager.create_session(session_id, current_user.email)
-    # In a real app, you would send a push notification/email here.
-    # For the app, we return the code so the UI can show it.
     return {"session_id": session_id, "message": f"Invite sent to {contact_email}"}
 
 @app.post("/api/session/join")
@@ -325,6 +330,15 @@ async def join_session(data: SessionJoin):
     if data.session_id not in manager.sessions: return {"error": "Session not found"}
     manager.add_user(data.session_id, data.user_id)
     return {"status": "joined"}
+
+@app.get("/api/session/{session_id}/status")
+async def session_status(session_id: str):
+    if session_id not in manager.sessions: 
+        return {"error": "Session not found", "user_count": 0}
+    return {
+        "user_count": len(manager.connections.get(session_id, {})),
+        "users": list(manager.sessions[session_id]["users"])
+    }
 
 @app.post("/api/predict-sign")
 async def predict_sign(video: UploadFile = File(...)):
