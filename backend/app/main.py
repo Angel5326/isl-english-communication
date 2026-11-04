@@ -121,9 +121,21 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 @app.post("/api/register")
 def register(user: UserRegister, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
     
+    if db_user:
+    if db_user.is_verified:
+        raise HTTPException(status_code=400, detail="Email already registered. Please login.")
+    else:
+        # Update password and generate NEW OTP
+        db_user.hashed_password = pwd_context.hash(user.password)
+        db_user.name = user.name
+        otp = str(random.randint(100000, 999999))
+        db_user.otp = otp
+        db.commit()
+        print(f"🔐 NEW OTP for {user.email} is: {otp}")
+        return {"message": "New OTP generated."}
+    
+    # If completely new user
     hashed_pw = pwd_context.hash(user.password)
     otp = str(random.randint(100000, 999999))
     
@@ -131,20 +143,8 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     
-    # MOCK OTP SENDING: In production, use smtplib to email this.
     print(f"🔐 OTP for {user.email} is: {otp}")
-    return {"message": "User registered. Please check console for OTP."}
-
-@app.post("/api/verify-otp")
-def verify_otp(data: OTPVerify, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
-    if not user or user.otp != data.otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    
-    user.is_verified = True
-    user.otp = None
-    db.commit()
-    return {"message": "Account verified successfully"}
+    return {"message": "User registered. Please check Render logs for OTP."}}
 
 @app.post("/api/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
