@@ -157,6 +157,21 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer", "name": user.name, "email": user.email}
 
+@app.post("/api/verify-otp")
+def verify_otp(data: OTPVerify, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == data.email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.otp != data.otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    
+    # Verify the user
+    user.is_verified = True
+    user.otp = None  # Clear the OTP
+    db.commit()
+    
+    return {"message": "Account verified successfully. You can now login."}
+
 # --- CONTACTS ENDPOINTS ---
 @app.post("/api/contacts/add")
 def add_contact(contact: ContactAdd, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
