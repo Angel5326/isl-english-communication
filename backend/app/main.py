@@ -214,7 +214,7 @@ groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 english_to_gloss = EnglishToGloss()
 mp_hands = mp.solutions.hands
 
-hands_detector = mp_hands.Hands(static_image_mode=False, max_num_hands=2, model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+hands_detector = mp_hands.Hands(static_image_mode=False, max_num_hands=2, model_complexity=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 SEQ_MODEL_PATH = Path("ml/models/sequence_classifier_normalized.pt")
 SEQ_LABELS_PATH = Path("ml/models/sequence_labels_normalized.json")
@@ -261,7 +261,7 @@ def extract_landmarks_from_video(video_path: str) -> np.ndarray:
         ret, frame = cap.read()
         if not ret: break
         frame_count += 1
-        if frame_count % 3 != 0: continue
+        if frame_count % 2 != 0: continue
         processed_count += 1
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = hands_detector.process(rgb)
