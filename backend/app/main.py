@@ -125,7 +125,7 @@ app = FastAPI(title="ISL-English Real-Time Server")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"http://localhost:\d+", # Allows any localhost port
     allow_credentials=True, 
     allow_methods=["*"],
     allow_headers=["*"],
