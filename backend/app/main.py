@@ -6,7 +6,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File, UploadFile, D
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -22,40 +22,12 @@ import torch.nn as nn
 import tempfile
 from pathlib import Path
 from typing import Dict, Optional
+import requests # Used for Resend Email API
 
+# --- NLP & LLM Imports ---
 from nlp.gloss_to_english import GlossToEnglish
 from nlp.english_to_gloss import EnglishToGloss
 from groq import Groq
-
-import requests
-
-def send_otp_email(receiver_email: str, otp: str):
-    # Render Environment la RESEND_API_KEY set pannanum
-    api_key = os.environ.get("RESEND_API_KEY")
-    if not api_key:
-        print(f"Fallback OTP for {receiver_email} is: {otp}")
-        return
-
-    url = "https://api.resend.com/emails"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "from": "onboarding@resend.dev",  # Resend free testing domain
-        "to": [receiver_email],
-        "subject": "Handy Talk - Verify Your Account",
-        "html": f"<strong>Your OTP is: {otp}</strong>"
-    }
-
-    try:
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 200:
-            print(f"✅ Email sent to {receiver_email}")
-        else:
-            print(f"❌ Email failed: {response.text}. Fallback OTP: {otp}")
-    except Exception as e:
-        print(f"❌ Error: {e}. Fallback OTP: {otp}")
 
 # --- DATABASE SETUP ---
 SQLALCHEMY_DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./handytalk.db")
@@ -93,31 +65,6 @@ SECRET_KEY = "handy_talk_super_secret_key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
 
-def send_otp_email(receiver_email: str, otp: str):
-    # Fetch credentials from Render Environment Variables
-    sender_email = os.environ.get("EMAIL_USER")
-    sender_password = os.environ.get("EMAIL_PASS")
-    
-    if not sender_email or not sender_password:
-        print("⚠️ Email credentials not set. OTP is:", otp)
-        return
-
-    msg = EmailMessage()
-    msg.set_content(f"Your Handy Talk verification code is: {otp}\n\nDo not share this code with anyone.")
-    msg['Subject'] = 'Handy Talk - Verify Your Account'
-    msg['From'] = sender_email
-    msg['To'] = receiver_email
-
-    try:
-        # Connect to Gmail's SMTP server
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(sender_email, sender_password)
-            smtp.send_message(msg)
-        print(f"✅ OTP Email successfully sent to {receiver_email}")
-    except Exception as e:
-        print(f"❌ Failed to send email: {e}")
-        print(f"Fallback OTP for {receiver_email} is: {otp}")
-
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
@@ -125,8 +72,8 @@ app = FastAPI(title="ISL-English Real-Time Server")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://localhost:\d+", # Allows any localhost port
-    allow_credentials=True, 
+    allow_origins=["*"],
+    allow_credentials=False, 
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -151,6 +98,14 @@ class TranslateRequest(BaseModel):
 class EnglishRequest(BaseModel):
     text: str
 
+class SessionCreate(BaseModel):
+    user_id: str
+    session_id: Optional[str] = None
+
+class SessionJoin(BaseModel):
+    session_id: str
+    user_id: str
+
 # --- AUTH UTILS ---
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -172,33 +127,71 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
+# --- EMAIL SENDING LOGIC (Using Resend HTTP API) ---
+def send_otp_email(receiver_email: str, otp: str):
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        print(f"⚠️ RESEND_API_KEY missing. Fallback OTP for {receiver_email} is: {otp}")
+        return
+
+    url = "https://api.resend.com/emails"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "from": "onboarding@resend.dev",
+        "to": [receiver_email],
+        "subject": "Handy Talk - Verify Your Account",
+        "html": f"<strong>Your OTP is: {otp}</strong>"
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            print(f"✅ Email sent to {receiver_email}")
+        else:
+            print(f"❌ Email failed: {response.text}. Fallback OTP for {receiver_email} is: {otp}")
+    except Exception as e:
+        print(f"❌ Error: {e}. Fallback OTP for {receiver_email} is: {otp}")
+
 # --- AUTH ENDPOINTS ---
 @app.post("/api/register")
 def register(user: UserRegister, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
-    
     otp = str(random.randint(100000, 999999))
     
     if db_user:
         if db_user.is_verified:
             raise HTTPException(status_code=400, detail="Email already registered. Please login.")
         else:
-            # Update existing unverified user
             db_user.hashed_password = pwd_context.hash(user.password)
             db_user.name = user.name
             db_user.otp = otp
             db.commit()
-            send_otp_email(user.email, otp) # Send real email
+            send_otp_email(user.email, otp)
             return {"message": "New OTP sent to your email."}
 
-    # Create new user
     hashed_pw = pwd_context.hash(user.password)
     new_user = User(name=user.name, email=user.email, hashed_password=hashed_pw, otp=otp)
     db.add(new_user)
     db.commit()
     
-    send_otp_email(user.email, otp) # Send real email
-    return {"message": "User registered. Please check your email for OTP."}
+    send_otp_email(user.email, otp)
+    return {"message": "User registered. Please check email."}
+
+@app.post("/api/verify-otp")
+def verify_otp(data: OTPVerify, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == data.email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.otp != data.otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    
+    user.is_verified = True
+    user.otp = None
+    db.commit()
+    return {"message": "Account verified successfully."}
 
 @app.post("/api/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -211,25 +204,9 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer", "name": user.name, "email": user.email}
 
-@app.post("/api/verify-otp")
-def verify_otp(data: OTPVerify, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if user.otp != data.otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    
-    # Verify the user
-    user.is_verified = True
-    user.otp = None  # Clear the OTP
-    db.commit()
-    
-    return {"message": "Account verified successfully. You can now login."}
-
 # --- CONTACTS ENDPOINTS ---
 @app.post("/api/contacts/add")
 def add_contact(contact: ContactAdd, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Check if the person you are adding actually exists and is verified
     target_user = db.query(User).filter(User.email == contact.contact_email, User.is_verified == True).first()
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found or not verified")
@@ -246,23 +223,14 @@ def get_contacts(current_user: User = Depends(get_current_user), db: Session = D
 
 @app.delete("/api/contacts/{contact_email}")
 def delete_contact(contact_email: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    contact = db.query(Contact).filter(
-        Contact.owner_email == current_user.email, 
-        Contact.contact_email == contact_email
-    ).first()
-    
+    contact = db.query(Contact).filter(Contact.owner_email == current_user.email, Contact.contact_email == contact_email).first()
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
-        
     db.delete(contact)
     db.commit()
-    return {"message": "Contact deleted successfully"}
+    return {"message": "Contact deleted"}
 
-
-# ==========================================
-# YOUR EXISTING ISL / LSTM / WEBSOCKET LOGIC
-# ==========================================
-
+# --- ISL / LSTM / WEBSOCKET LOGIC ---
 gloss_to_english = GlossToEnglish()
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 english_to_gloss = EnglishToGloss()
@@ -360,33 +328,17 @@ class SessionManager:
 
 manager = SessionManager()
 
-class SessionCreate(BaseModel):
-    user_id: str
-    session_id: Optional[str] = None # <--- Add this
-
-
-class SessionJoin(BaseModel):
-    session_id: str
-    user_id: str
-
 @app.post("/api/session/create")
 async def create_session(data: SessionCreate):
-    # If user typed a code, use it. Otherwise, generate a random one.
     if data.session_id:
         session_id = data.session_id
         if session_id in manager.sessions:
-            raise HTTPException(status_code=400, detail="Session code already in use. Try joining instead.")
+            raise HTTPException(status_code=400, detail="Session code already in use.")
     else:
         session_id = str(random.randint(1000, 9999))
         
     manager.create_session(session_id, data.user_id)
     return {"session_id": session_id}
-
-@app.post("/api/session/invite")
-async def invite_session(contact_email: str, current_user: User = Depends(get_current_user)):
-    session_id = str(random.randint(1000, 9999))
-    manager.create_session(session_id, current_user.email)
-    return {"session_id": session_id, "message": f"Invite sent to {contact_email}"}
 
 @app.post("/api/session/join")
 async def join_session(data: SessionJoin):
@@ -396,12 +348,8 @@ async def join_session(data: SessionJoin):
 
 @app.get("/api/session/{session_id}/status")
 async def session_status(session_id: str):
-    if session_id not in manager.sessions: 
-        return {"error": "Session not found", "user_count": 0}
-    return {
-        "user_count": len(manager.connections.get(session_id, {})),
-        "users": list(manager.sessions[session_id]["users"])
-    }
+    if session_id not in manager.sessions: return {"error": "Session not found", "user_count": 0}
+    return {"user_count": len(manager.connections.get(session_id, {})), "users": list(manager.sessions[session_id]["users"])}
 
 @app.post("/api/predict-sign")
 async def predict_sign(video: UploadFile = File(...)):
@@ -423,7 +371,7 @@ async def predict_sign(video: UploadFile = File(...)):
         probs = torch.softmax(sequence_model(tensor), dim=1)[0]
         pred_idx = int(torch.argmax(probs))
         confidence = float(probs[pred_idx])
-    if confidence < 0.4: return {"gloss": "Low confidence", "confidence": round(confidence, 2)}
+    if confidence < 0.5: return {"gloss": "Low confidence", "confidence": round(confidence, 2)}
     return {"gloss": sequence_labels[pred_idx].upper(), "confidence": round(confidence, 2)}
 
 @app.post("/api/translate-gloss")
