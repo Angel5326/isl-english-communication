@@ -13,14 +13,17 @@ class CameraService {
   bool _isPaused = false;
   bool _isActive = false;
 
+  // Use the cloud backend URL
   static const String _baseUrl = 'https://handy-talk.onrender.com';
-  static const Duration recordDuration = Duration(milliseconds: 2000);
+  
+  // Increased duration to capture full sign
+  static const Duration recordDuration = Duration(milliseconds: 1500);
   static const Duration gapBetweenAttempts = Duration(milliseconds: 100);
-  static const double minConfidence = 0.30;
+  static const double minConfidence = 0.60; // Increased confidence
 
   final Queue<String> _recentPredictions = Queue<String>();
   static const int smoothingWindow = 3;
-  static const int votesNeeded = 1;
+  static const int votesNeeded = 2; // Requires 2 consecutive predictions
 
   Future<void> initialize() async {
     final cameras = await availableCameras();
@@ -68,7 +71,7 @@ class CameraService {
 
       final bytes = await clip.readAsBytes();
 
-      if (bytes.length < 10000) {
+      if (bytes.length < 5000) {
         debugPrint('[CameraService] ⚠️ Clip too small — tab likely lost focus. Skipping.');
         _onRawPrediction?.call('Skipped (keep tab focused)', 0.0);
         return;
@@ -87,6 +90,12 @@ class CameraService {
         var data = jsonDecode(await response.stream.bytesToString());
         String gloss = data['gloss'] ?? 'No sign detected';
         double confidence = (data['confidence'] ?? 0.0).toDouble();
+
+        // Don't show backend errors as "predictions"
+        if (data['reason'] != null) {
+          _onRawPrediction?.call('Analyzing...', 0.0);
+          return;
+        }
 
         _onRawPrediction?.call(gloss, confidence);
 
@@ -117,7 +126,7 @@ class CameraService {
     for (final entry in counts.entries) {
       if (entry.value >= votesNeeded) {
         debugPrint('[CameraService] ✅ Confirmed: ${entry.key}');
-        _recentPredictions.clear();
+        _recentPredictions.clear(); // Clear history after confirmation
         return entry.key;
       }
     }

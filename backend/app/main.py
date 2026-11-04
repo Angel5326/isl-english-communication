@@ -70,10 +70,11 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
 app = FastAPI(title="ISL-English Real-Time Server")
 
+# --- CORS FIX ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False, 
+    allow_origin_regex=r"http://localhost:\d+|https://.*", # Allows local & deployed frontends
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -127,7 +128,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
-# --- EMAIL SENDING LOGIC (Using Resend HTTP API) ---
+# --- EMAIL SENDING LOGIC (Resend HTTP API) ---
 def send_otp_email(receiver_email: str, otp: str):
     api_key = os.environ.get("RESEND_API_KEY")
     if not api_key:
@@ -236,7 +237,14 @@ groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 english_to_gloss = EnglishToGloss()
 mp_hands = mp.solutions.hands
 
-hands_detector = mp_hands.Hands(static_image_mode=False, max_num_hands=2, model_complexity=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+# ACCURACY IMPROVEMENT: Increased confidence
+hands_detector = mp_hands.Hands(
+    static_image_mode=False, 
+    max_num_hands=2, 
+    model_complexity=1, 
+    min_detection_confidence=0.6, # Increased from 0.5
+    min_tracking_confidence=0.6
+)
 
 SEQ_MODEL_PATH = Path("ml/models/sequence_classifier_normalized.pt")
 SEQ_LABELS_PATH = Path("ml/models/sequence_labels_normalized.json")
@@ -365,13 +373,19 @@ async def predict_sign(video: UploadFile = File(...)):
     non_zero = np.any(raw_seq != 0, axis=1).sum()
     if non_zero / raw_seq.shape[0] < 0.2: return {"gloss": "No hand", "confidence": 0.0}
     
+    # --- ACCURACY IMPROVEMENT: Motion Detection ---
+    motion_variance = np.var(raw_seq, axis=0).mean()
+    if motion_variance < 0.0001: # If hand is too still
+        return {"gloss": "No motion", "confidence": 0.0, "reason": "static_hand"}
+    # ----------------------------------------------
+    
     seq = resample_sequence(raw_seq, SEQ_LEN)
     tensor = torch.tensor(seq, dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
         probs = torch.softmax(sequence_model(tensor), dim=1)[0]
         pred_idx = int(torch.argmax(probs))
         confidence = float(probs[pred_idx])
-    if confidence < 0.5: return {"gloss": "Low confidence", "confidence": round(confidence, 2)}
+    if confidence < 0.6: return {"gloss": "Low confidence", "confidence": round(confidence, 2)} # Increased from 0.4
     return {"gloss": sequence_labels[pred_idx].upper(), "confidence": round(confidence, 2)}
 
 @app.post("/api/translate-gloss")
