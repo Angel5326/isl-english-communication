@@ -11,20 +11,10 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
-import uvicorn
-import json
-import random
-import cv2
-import numpy as np
-import mediapipe as mp
-import torch
-import torch.nn as nn
-import tempfile
+import uvicorn, json, random, cv2, numpy as np, mediapipe as mp, torch, torch.nn as nn, tempfile, requests
 from pathlib import Path
 from typing import Dict, Optional
-import requests
 
-# --- NLP & LLM Imports ---
 from nlp.gloss_to_english import GlossToEnglish
 from nlp.english_to_gloss import EnglishToGloss
 from groq import Groq
@@ -43,6 +33,7 @@ class User(Base):
     hashed_password = Column(String)
     is_verified = Column(Boolean, default=False)
     otp = Column(String, nullable=True)
+    profile_pic = Column(String, nullable=True) # NEW: Profile Picture URL
 
 class Contact(Base):
     __tablename__ = "contacts"
@@ -63,14 +54,13 @@ def get_db():
 # --- AUTH SETUP ---
 SECRET_KEY = "handy_talk_super_secret_key"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
 app = FastAPI(title="ISL-English Real-Time Server")
 
-# --- CORS SETUP ---
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"http://localhost:\d+|https://.*", 
@@ -88,6 +78,18 @@ class UserRegister(BaseModel):
 class OTPVerify(BaseModel):
     email: EmailStr
     otp: str
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp: str
+    new_password: str
+
+class UserProfileUpdate(BaseModel):
+    name: str
+    profile_pic: Optional[str] = None
 
 class ContactAdd(BaseModel):
     contact_name: str
@@ -128,35 +130,26 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
-# --- EMAIL SENDING LOGIC ---
-def send_otp_email(receiver_email: str, otp: str):
+def send_otp_email(receiver_email: str, otp: str, subject: str = "Handy Talk - Verify Your Account"):
     api_key = os.environ.get("RESEND_API_KEY")
     if not api_key:
         print(f"⚠️ RESEND_API_KEY missing. Fallback OTP for {receiver_email} is: {otp}")
         return
 
     url = "https://api.resend.com/emails"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "from": "onboarding@resend.dev",
-        "to": [receiver_email],
-        "subject": "Handy Talk - Verify Your Account",
-        "html": f"<strong>Your OTP is: {otp}</strong>"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    data = {"from": "onboarding@resend.dev", "to": [receiver_email], "subject": subject, "html": f"<strong>Your OTP is: {otp}</strong>"}
 
     try:
         response = requests.post(url, headers=headers, json=data)
         if response.status_code == 200:
             print(f"✅ Email sent to {receiver_email}")
         else:
-            print(f"❌ Email failed: {response.text}. Fallback OTP for {receiver_email} is: {otp}")
+            print(f"❌ Email failed. Fallback OTP: {otp}")
     except Exception as e:
-        print(f"❌ Error: {e}. Fallback OTP for {receiver_email} is: {otp}")
+        print(f"❌ Error: {e}. Fallback OTP: {otp}")
 
-# --- AUTH ENDPOINTS ---
+# --- AUTH & USER ENDPOINTS ---
 @app.post("/api/register")
 def register(user: UserRegister, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
@@ -173,21 +166,17 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
             send_otp_email(user.email, otp)
             return {"message": "New OTP sent to your email."}
 
-    hashed_pw = pwd_context.hash(user.password)
-    new_user = User(name=user.name, email=user.email, hashed_password=hashed_pw, otp=otp)
+    new_user = User(name=user.name, email=user.email, hashed_password=pwd_context.hash(user.password), otp=otp)
     db.add(new_user)
     db.commit()
-    
     send_otp_email(user.email, otp)
     return {"message": "User registered. Please check email."}
 
 @app.post("/api/verify-otp")
 def verify_otp(data: OTPVerify, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == data.email).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if user.otp != data.otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
+    if not user: raise HTTPException(status_code=404, detail="User not found")
+    if user.otp != data.otp: raise HTTPException(status_code=400, detail="Invalid OTP")
     
     user.is_verified = True
     user.otp = None
@@ -199,18 +188,53 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     user = db.query(User).filter(User.email == form_data.username).first()
     if not user or not pwd_context.verify(form_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
-    if not user.is_verified:
-        raise HTTPException(status_code=403, detail="Please verify your email first")
+    if not user.is_verified: raise HTTPException(status_code=403, detail="Please verify your email first")
     
     access_token = create_access_token(data={"sub": user.email})
-    return {"access_token": access_token, "token_type": "bearer", "name": user.name, "email": user.email}
+    return {
+        "access_token": access_token, "token_type": "bearer", 
+        "name": user.name, "email": user.email, "profile_pic": user.profile_pic
+    }
+
+@app.get("/api/user/profile")
+def get_profile(current_user: User = Depends(get_current_user)):
+    return {"name": current_user.name, "email": current_user.email, "profile_pic": current_user.profile_pic}
+
+@app.put("/api/user/profile")
+def update_profile(data: UserProfileUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    current_user.name = data.name
+    if data.profile_pic is not None:
+        current_user.profile_pic = data.profile_pic
+    db.commit()
+    return {"message": "Profile updated successfully"}
+
+@app.post("/api/forgot-password")
+def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == data.email).first()
+    if not user: raise HTTPException(status_code=404, detail="Email not found")
+    
+    otp = str(random.randint(100000, 999999))
+    user.otp = otp
+    db.commit()
+    send_otp_email(user.email, otp, "Handy Talk - Password Reset")
+    return {"message": "Password reset OTP sent to email."}
+
+@app.post("/api/reset-password")
+def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == data.email).first()
+    if not user or user.otp != data.otp:
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+    
+    user.hashed_password = pwd_context.hash(data.new_password)
+    user.otp = None
+    db.commit()
+    return {"message": "Password reset successfully. Please login."}
 
 # --- CONTACTS ENDPOINTS ---
 @app.post("/api/contacts/add")
 def add_contact(contact: ContactAdd, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     target_user = db.query(User).filter(User.email == contact.contact_email, User.is_verified == True).first()
-    if not target_user:
-        raise HTTPException(status_code=404, detail="User not found or not verified")
+    if not target_user: raise HTTPException(status_code=404, detail="User not found or not verified")
     
     new_contact = Contact(owner_email=current_user.email, contact_name=target_user.name, contact_email=target_user.email)
     db.add(new_contact)
@@ -225,28 +249,20 @@ def get_contacts(current_user: User = Depends(get_current_user), db: Session = D
 @app.delete("/api/contacts/{contact_email}")
 def delete_contact(contact_email: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     contact = db.query(Contact).filter(Contact.owner_email == current_user.email, Contact.contact_email == contact_email).first()
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
+    if not contact: raise HTTPException(status_code=404, detail="Contact not found")
     db.delete(contact)
     db.commit()
     return {"message": "Contact deleted"}
 
 # ==========================================
-# AI / MACHINE LEARNING PIPELINE
+# AI / MACHINE LEARNING PIPELINE (UNCHANGED)
 # ==========================================
 gloss_to_english = GlossToEnglish()
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 english_to_gloss = EnglishToGloss()
 mp_hands = mp.solutions.hands
 
-# SPEED OPTIMIZATION: model_complexity=0 is the fastest
-hands_detector = mp_hands.Hands(
-    static_image_mode=False, 
-    max_num_hands=2, 
-    model_complexity=0, 
-    min_detection_confidence=0.5, 
-    min_tracking_confidence=0.5
-)
+hands_detector = mp_hands.Hands(static_image_mode=False, max_num_hands=2, model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 SEQ_MODEL_PATH = Path("ml/models/sequence_classifier_normalized.pt")
 SEQ_LABELS_PATH = Path("ml/models/sequence_labels_normalized.json")
@@ -287,14 +303,11 @@ def normalize_frame(frame_features: np.ndarray) -> np.ndarray:
 
 def extract_landmarks_from_video(video_path: str) -> np.ndarray:
     cap = cv2.VideoCapture(video_path)
-    frame_count = 0
-    sequence = []
+    frame_count, sequence = 0, []
     while True:
         ret, frame = cap.read()
         if not ret: break
         frame_count += 1
-        
-        # SPEED OPTIMIZATION: Skip every 3rd frame
         if frame_count % 3 != 0: continue
         
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -306,13 +319,8 @@ def extract_landmarks_from_video(video_path: str) -> np.ndarray:
                 for lm in hand_landmarks.landmark: coords.extend([lm.x, lm.y, lm.z])
                 if handedness.classification[0].label == "Left": left = coords
                 else: right = coords
-                
         sequence.append(normalize_frame(np.array(left + right, dtype=np.float32)))
-        
-        # SPEED OPTIMIZATION: Early stopping once we have 30 frames
-        if len(sequence) >= 30:
-            break
-            
+        if len(sequence) >= 30: break
     cap.release()
     return np.array(sequence, dtype=np.float32)
 
@@ -353,11 +361,8 @@ manager = SessionManager()
 async def create_session(data: SessionCreate):
     if data.session_id:
         session_id = data.session_id
-        if session_id in manager.sessions:
-            raise HTTPException(status_code=400, detail="Session code already in use.")
-    else:
-        session_id = str(random.randint(1000, 9999))
-        
+        if session_id in manager.sessions: raise HTTPException(status_code=400, detail="Session code already in use.")
+    else: session_id = str(random.randint(1000, 9999))
     manager.create_session(session_id, data.user_id)
     return {"session_id": session_id}
 
@@ -386,32 +391,25 @@ async def predict_sign(video: UploadFile = File(...)):
     if sequence_model is None: return {"gloss": "No model", "confidence": 0.0}
     contents = await video.read()
     if len(contents) < 2000: return {"gloss": "Video too small", "confidence": 0.0}
-    
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
-        
     try: raw_seq = extract_landmarks_from_video(tmp_path)
     finally: os.remove(tmp_path)
     
     if raw_seq.shape[0] == 0: return {"gloss": "No sign", "confidence": 0.0}
-    
     non_zero = np.any(raw_seq != 0, axis=1).sum()
     if non_zero / raw_seq.shape[0] < 0.2: return {"gloss": "No hand", "confidence": 0.0}
     
-    # ACCURACY OPTIMIZATION: Motion Detection
     motion_variance = np.var(raw_seq, axis=0).mean()
-    if motion_variance < 0.0001: 
-        return {"gloss": "No motion", "confidence": 0.0, "reason": "static_hand"}
+    if motion_variance < 0.0001: return {"gloss": "No motion", "confidence": 0.0, "reason": "static_hand"}
     
     seq = resample_sequence(raw_seq, SEQ_LEN)
     tensor = torch.tensor(seq, dtype=torch.float32).unsqueeze(0)
-    
     with torch.no_grad():
         probs = torch.softmax(sequence_model(tensor), dim=1)[0]
         pred_idx = int(torch.argmax(probs))
         confidence = float(probs[pred_idx])
-        
     if confidence < 0.50: return {"gloss": "Low confidence", "confidence": round(confidence, 2)}
     return {"gloss": sequence_labels[pred_idx].upper(), "confidence": round(confidence, 2)}
 

@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt; // <--- NEW IMPORT
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:speech_to_text/speech_recognition_result.dart';
 import '../services/camera_service.dart';
 
 class ChatDashboard extends StatefulWidget {
@@ -65,6 +66,8 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
   // --- Speech to Text ---
   final stt.SpeechToText _speech = stt.SpeechToText();
   bool _isListening = false;
+  bool _speechEnabled = false; // Tracks if speech is available
+  String _lastWords = '';
 
   // --- Animation Controllers ---
   late AnimationController _scanController;
@@ -92,34 +95,47 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
 
   // --- SPEECH TO TEXT LOGIC ---
   void _initSpeech() async {
-    await _speech.initialize(
-      onStatus: (status) {
-        if (status == 'done' || status == 'notListening') {
-          setState(() => _isListening = false);
-        }
-      },
-      onError: (error) => debugPrint('Speech Error: $error'),
+    try {
+      _speechEnabled = await _speech.initialize(
+        onError: (val) => debugPrint('Speech Error: $val'),
+        onStatus: (val) => debugPrint('Speech Status: $val'),
+      );
+      setState(() {});
+    } catch (e) {
+      debugPrint('Speech Init Error: $e');
+    }
+  }
+
+  void _startListening() async {
+    if (!_speechEnabled) {
+      _showError('Speech recognition not available on this browser.');
+      return;
+    }
+
+    _textController.clear();
+    setState(() => _isListening = true);
+
+    await _speech.listen(
+      onResult: _onSpeechResult,
+      listenFor: const Duration(seconds: 30),
+      pauseFor: const Duration(seconds: 3),
+      localeId: 'en_US',
     );
   }
 
-  void _listen() async {
-    if (!_isListening) {
-      bool available = await _speech.initialize();
-      if (available) {
-        setState(() => _isListening = true);
-        _speech.listen(
-          onResult: (result) {
-            setState(() {
-              _textController.text = result.recognizedWords;
-            });
-          },
-        );
-      } else {
-        _showError('Microphone not available');
-      }
-    } else {
+  void _stopListening() async {
+    setState(() => _isListening = false);
+    await _speech.stop();
+  }
+
+  void _onSpeechResult(SpeechRecognitionResult result) {
+    setState(() {
+      _lastWords = result.recognizedWords;
+      _textController.text = _lastWords;
+    });
+    // If it's a final result, stop the listening indicator
+    if (result.finalResult) {
       setState(() => _isListening = false);
-      _speech.stop();
     }
   }
 
@@ -299,8 +315,7 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
     String text = _textController.text.trim();
     _textController.clear();
     if (_isListening) {
-      _speech.stop();
-      setState(() => _isListening = false);
+      _stopListening();
     }
 
     try {
@@ -844,10 +859,10 @@ class _ChatDashboardState extends State<ChatDashboard> with TickerProviderStateM
                 ),
                 child: IconButton(
                   icon: Icon(
-                    _isListening ? Icons.mic : Icons.mic_none,
+                    _isListening ? Icons.stop : Icons.mic_none,
                     color: _isListening ? Colors.redAccent : Colors.white,
                   ),
-                  onPressed: _listen,
+                  onPressed: _isListening ? _stopListening : _startListening,
                 ),
               ),
               // SEND BUTTON
