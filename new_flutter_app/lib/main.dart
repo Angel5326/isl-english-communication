@@ -1,23 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'screens/login_screen.dart';
-import 'screens/contacts_screen.dart';
-import 'screens/splash_screen.dart'; // <--- Import this
+import 'screens/splash_screen.dart';
 
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  
-  // Check if the user is already logged in
-  final prefs = await SharedPreferences.getInstance();
-  final token = prefs.getString('token');
-
-  runApp(MyApp(isLoggedIn: token != null));
+void main() {
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
-  final bool isLoggedIn;
-  const MyApp({super.key, required this.isLoggedIn});
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -31,8 +20,8 @@ class MyApp extends StatelessWidget {
           secondary: const Color(0xFF06B6D4),
         ),
       ),
-      // If token exists, go straight to Contacts. If not, show Login.
-      home: const SplashScreen(), // <--- Change this
+      // Always start at Splash Screen
+      home: const SplashScreen(), 
     );
   }
 }

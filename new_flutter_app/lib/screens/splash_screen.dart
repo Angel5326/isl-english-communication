@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math; // Background animation ku thevai
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'login_screen.dart';
@@ -14,6 +15,8 @@ class SplashScreen extends StatefulWidget {
 class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMixin {
   late AnimationController _logoController;
   late AnimationController _glowController;
+  late AnimationController _bgController; // Background animation ku
+  
   late Animation<double> _scaleAnimation;
   late Animation<double> _fadeAnimation;
 
@@ -26,7 +29,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     );
-    _scaleAnimation = Tween<double>(begin: 0.7, end: 1.0).animate(
+    _scaleAnimation = Tween<double>(begin: 0.5, end: 1.0).animate(
       CurvedAnimation(parent: _logoController, curve: Curves.easeOutBack),
     );
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
@@ -39,23 +42,26 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
 
-    // Start animations
+    // 3. Background Floating Orbs Animation (Continuous)
+    _bgController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 10),
+    )..repeat();
+
     _logoController.forward();
 
-    // Navigate after 3.5 seconds
+    // 3.5 seconds aprom Login/Home ku navigate pannum
     Timer(const Duration(milliseconds: 3500), _navigateToNext);
   }
 
-  Future<void> _navigateToNext() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('token');
-
+    Future<void> _navigateToNext() async {
     if (!mounted) return;
-
+    
+    // Always navigate to Login Screen after splash
     Navigator.pushReplacement(
       context,
       PageRouteBuilder(
-        pageBuilder: (_, __, ___) => token != null ? const ContactsScreen() : const LoginScreen(),
+        pageBuilder: (_, __, ___) => const LoginScreen(),
         transitionsBuilder: (_, animation, __, child) {
           return FadeTransition(opacity: animation, child: child);
         },
@@ -68,6 +74,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
   void dispose() {
     _logoController.dispose();
     _glowController.dispose();
+    _bgController.dispose(); // Dispose background controller
     super.dispose();
   }
 
@@ -77,22 +84,34 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
       backgroundColor: const Color(0xFF0B0F19), // Deep Dark Blue
       body: Stack(
         children: [
-          // Background Glowing Orbs
-          Positioned(
-            top: -100,
-            left: -100,
-            child: Container(
-              width: 300,
-              height: 300,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: RadialGradient(
-                  colors: [Colors.blueAccent.withOpacity(0.15), Colors.transparent],
-                ),
-              ),
-            ),
+          // --- ATTRACTIVE BACKGROUND ANIMATION ---
+          AnimatedBuilder(
+            animation: _bgController,
+            builder: (context, child) {
+              return Stack(
+                children: [
+                  // Glowing Orb 1
+                  Positioned(
+                    top: 100 + (math.sin(_bgController.value * math.pi * 2) * 50),
+                    left: -50 + (math.cos(_bgController.value * math.pi * 2) * 30),
+                    child: _buildGlowingOrb(200, Colors.blueAccent.withOpacity(0.15)),
+                  ),
+                  // Glowing Orb 2
+                  Positioned(
+                    bottom: 50 + (math.cos(_bgController.value * math.pi * 2) * 60),
+                    right: -50 + (math.sin(_bgController.value * math.pi * 2) * 40),
+                    child: _buildGlowingOrb(250, const Color(0xFF06B6D4).withOpacity(0.1)),
+                  ),
+                  // Glowing Orb 3 (Center glow behind logo)
+                  Center(
+                    child: _buildGlowingOrb(300, Colors.white.withOpacity(0.03)),
+                  ),
+                ],
+              );
+            },
           ),
-          
+
+          // --- MAIN LOGO & LOADING BAR ---
           Center(
             child: FadeTransition(
               opacity: _fadeAnimation,
@@ -101,31 +120,38 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    // Glowing Logo
+                    // --- CIRCLE LOGO WITH GLOW ---
                     AnimatedBuilder(
                       animation: _glowController,
                       builder: (context, child) {
                         return Container(
+                          width: 180,
+                          height: 180,
                           decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: const Color(0xFF06B6D4).withOpacity(0.5 + (0.5 * _glowController.value)),
+                              width: 3,
+                            ),
                             boxShadow: [
                               BoxShadow(
-                                color: Colors.blueAccent.withOpacity(0.3 * _glowController.value),
+                                color: Colors.blueAccent.withOpacity(0.4 * _glowController.value),
                                 blurRadius: 40,
                                 spreadRadius: 15 * _glowController.value,
                               ),
                             ],
                           ),
-                          child: child,
+                          child: ClipOval(
+                            child: Image.asset(
+                              'assets/images/logo.png',
+                              fit: BoxFit.cover, // Image ah circle ku ulla perfect ah fit pannum
+                            ),
+                          ),
                         );
                       },
-                      child: Image.asset(
-                        'assets/images/logo.png',
-                        width: 300,
-                        fit: BoxFit.contain,
-                      ),
                     ),
                     
-                    const SizedBox(height: 40),
+                    const SizedBox(height: 50),
                     
                     // Futuristic Loading Bar
                     FadeTransition(
@@ -144,12 +170,37 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
                         ),
                       ),
                     ),
+                    
+                    const SizedBox(height: 20),
+                    
+                    Text(
+                      'Connecting Hearts...',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.5),
+                        fontSize: 14,
+                        letterSpacing: 2,
+                      ),
+                    ),
                   ],
                 ),
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // Helper widget for glowing orbs
+  Widget _buildGlowingOrb(double size, Color color) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          colors: [color, Colors.transparent],
+        ),
       ),
     );
   }

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'chat_dashboard.dart';
+import 'login_screen.dart'; // Import LoginScreen for logout
 
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({super.key});
@@ -36,6 +37,20 @@ class _ContactsScreenState extends State<ContactsScreen> {
       }
     } catch (e) {
       debugPrint('Error loading contacts: $e');
+    }
+  }
+
+  // --- LOGOUT LOGIC ---
+  Future<void> _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear(); // Clears token and user data
+    
+    if (mounted) {
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (route) => false, // Removes all previous screens from history
+      );
     }
   }
 
@@ -119,10 +134,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
       final String generatedCode = data['session_id'].toString();
       
       if (mounted) {
-        // Show dialog and ONLY when they click "Enter Session", navigate
         showDialog(
           context: context,
-          barrierDismissible: false, // Force them to click the button
+          barrierDismissible: false,
           builder: (ctx) => AlertDialog(
             title: const Text('Session Code Created'),
             content: Text('Share this code with $email to connect:\n\n$generatedCode', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 2)),
@@ -148,13 +162,21 @@ class _ContactsScreenState extends State<ContactsScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF0B0F19),
       appBar: AppBar(
-  backgroundColor: Colors.transparent,
-  elevation: 0,
-  title: Image.asset('assets/images/logo.png', height: 40), // Logo in AppBar
-  actions: [
-    IconButton(icon: const Icon(Icons.person_add), onPressed: _addContactDialog)
-  ]
-),
+        title: const Text('My Contacts'), 
+        actions: [
+          // --- NEW: LOGOUT BUTTON ---
+          IconButton(
+            icon: const Icon(Icons.logout, color: Colors.redAccent), 
+            tooltip: 'Log Out',
+            onPressed: _logout
+          ),
+          IconButton(
+            icon: const Icon(Icons.person_add), 
+            tooltip: 'Add Contact',
+            onPressed: _addContactDialog
+          )
+        ]
+      ),
       body: _contacts.isEmpty 
           ? const Center(child: Text('No contacts yet. Add one!', style: TextStyle(color: Colors.white54)))
           : ListView.builder(
@@ -194,10 +216,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 );
               },
             ),
-      // --- NEW: Floating button for manual Create/Join ---
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () {
-          // Navigate to ChatDashboard WITHOUT a code (shows Create/Join screen)
           Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatDashboard()));
         },
         backgroundColor: const Color(0xFF6366F1),
