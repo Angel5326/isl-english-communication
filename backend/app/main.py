@@ -11,10 +11,20 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
-import uvicorn, json, random, cv2, numpy as np, mediapipe as mp, torch, torch.nn as nn, tempfile, requests
+import uvicorn
+import json
+import random
+import cv2
+import numpy as np
+import mediapipe as mp
+import torch
+import torch.nn as nn
+import tempfile
 from pathlib import Path
 from typing import Dict, Optional
+import requests
 
+# --- NLP & LLM Imports ---
 from nlp.gloss_to_english import GlossToEnglish
 from nlp.english_to_gloss import EnglishToGloss
 from groq import Groq
@@ -33,7 +43,7 @@ class User(Base):
     hashed_password = Column(String)
     is_verified = Column(Boolean, default=False)
     otp = Column(String, nullable=True)
-    profile_pic = Column(String, nullable=True) # NEW: Profile Picture URL
+    profile_pic = Column(String, nullable=True)
 
 class Contact(Base):
     __tablename__ = "contacts"
@@ -54,7 +64,7 @@ def get_db():
 # --- AUTH SETUP ---
 SECRET_KEY = "handy_talk_super_secret_key"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
@@ -130,24 +140,50 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
+# --- EMAIL SENDING LOGIC (BREVO API) ---
 def send_otp_email(receiver_email: str, otp: str, subject: str = "Handy Talk - Verify Your Account"):
-    api_key = os.environ.get("RESEND_API_KEY")
+    api_key = os.environ.get("BREVO_API_KEY")
+    
+    # Fallback if API key is missing
     if not api_key:
-        print(f"⚠️ RESEND_API_KEY missing. Fallback OTP for {receiver_email} is: {otp}")
+        print(f"⚠️ BREVO_API_KEY missing. Fallback OTP for {receiver_email} is: {otp}")
         return
 
-    url = "https://api.resend.com/emails"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    data = {"from": "onboarding@resend.dev", "to": [receiver_email], "subject": subject, "html": f"<strong>Your OTP is: {otp}</strong>"}
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "accept": "application/json",
+        "api-key": api_key,
+        "content-type": "application/json"
+    }
+    
+    # 🚨 IMPORTANT: Replace the email below with the Gmail you verified in Brevo
+    payload = {
+        "sender": {
+            "name": "Handy Talk",
+            "email": "abiangelin814@gmail.com"  # <--- CHANGE THIS
+        },
+        "to": [{"email": receiver_email}],
+        "subject": subject,
+        "htmlContent": f"""
+        <html>
+            <body>
+                <h2>Welcome to Handy Talk</h2>
+                <p>Your One-Time Password (OTP) is:</p>
+                <h1 style="color: #6366F1; font-size: 32px; letter-spacing: 5px;">{otp}</h1>
+                <p>This code will expire soon. Please do not share it with anyone.</p>
+            </body>
+        </html>
+        """
+    }
 
     try:
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 200:
-            print(f"✅ Email sent to {receiver_email}")
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code == 201:
+            print(f"✅ Email sent successfully to {receiver_email} via Brevo")
         else:
-            print(f"❌ Email failed. Fallback OTP: {otp}")
+            print(f"❌ Brevo error: {response.text}. Fallback OTP for {receiver_email} is: {otp}")
     except Exception as e:
-        print(f"❌ Error: {e}. Fallback OTP: {otp}")
+        print(f"❌ Network error: {e}. Fallback OTP for {receiver_email} is: {otp}")
 
 # --- AUTH & USER ENDPOINTS ---
 @app.post("/api/register")
@@ -255,13 +291,14 @@ def delete_contact(contact_email: str, current_user: User = Depends(get_current_
     return {"message": "Contact deleted"}
 
 # ==========================================
-# AI / MACHINE LEARNING PIPELINE (UNCHANGED)
+# AI / MACHINE LEARNING PIPELINE
 # ==========================================
 gloss_to_english = GlossToEnglish()
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 english_to_gloss = EnglishToGloss()
 mp_hands = mp.solutions.hands
 
+# Optimized for speed
 hands_detector = mp_hands.Hands(static_image_mode=False, max_num_hands=2, model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 SEQ_MODEL_PATH = Path("ml/models/sequence_classifier_normalized.pt")
