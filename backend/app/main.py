@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Dict, Optional
 import requests
 
-# --- NLP & LLM Imports ---
 from nlp.gloss_to_english import GlossToEnglish
 from nlp.english_to_gloss import EnglishToGloss
 from groq import Groq
@@ -64,7 +63,7 @@ def get_db():
 # --- AUTH SETUP ---
 SECRET_KEY = "handy_talk_super_secret_key"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
@@ -144,10 +143,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 def send_otp_email(receiver_email: str, otp: str, subject: str = "Handy Talk - Verify Your Account"):
     api_key = os.environ.get("BREVO_API_KEY")
     
-    # Fallback if API key is missing
     if not api_key:
         print(f"⚠️ BREVO_API_KEY missing. Fallback OTP for {receiver_email} is: {otp}")
-        return
+        return False
 
     url = "https://api.brevo.com/v3/smtp/email"
     headers = {
@@ -156,34 +154,28 @@ def send_otp_email(receiver_email: str, otp: str, subject: str = "Handy Talk - V
         "content-type": "application/json"
     }
     
-    # 🚨 IMPORTANT: Replace the email below with the Gmail you verified in Brevo
+    # 🚨 IMPORTANT: Make sure this EXACTLY matches the email you verified in Brevo
     payload = {
         "sender": {
             "name": "Handy Talk",
-            "email": "abiangelin814@gmail.com"  # <--- CHANGE THIS
+            "email": "abiangelin814@gmail.com"  # <--- MUST CHANGE THIS
         },
         "to": [{"email": receiver_email}],
         "subject": subject,
-        "htmlContent": f"""
-        <html>
-            <body>
-                <h2>Welcome to Handy Talk</h2>
-                <p>Your One-Time Password (OTP) is:</p>
-                <h1 style="color: #6366F1; font-size: 32px; letter-spacing: 5px;">{otp}</h1>
-                <p>This code will expire soon. Please do not share it with anyone.</p>
-            </body>
-        </html>
-        """
+        "htmlContent": f"<html><body><h2>Your OTP is: {otp}</h2></body></html>"
     }
 
     try:
         response = requests.post(url, json=payload, headers=headers)
         if response.status_code == 201:
             print(f"✅ Email sent successfully to {receiver_email} via Brevo")
+            return True
         else:
             print(f"❌ Brevo error: {response.text}. Fallback OTP for {receiver_email} is: {otp}")
+            return False
     except Exception as e:
         print(f"❌ Network error: {e}. Fallback OTP for {receiver_email} is: {otp}")
+        return False
 
 # --- AUTH & USER ENDPOINTS ---
 @app.post("/api/register")
@@ -199,14 +191,21 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
             db_user.name = user.name
             db_user.otp = otp
             db.commit()
-            send_otp_email(user.email, otp)
-            return {"message": "New OTP sent to your email."}
+            email_sent = send_otp_email(user.email, otp)
+            if email_sent:
+                return {"message": "New OTP sent to your email."}
+            else:
+                return {"message": "Email failed to send. Please check Render logs for OTP."}
 
     new_user = User(name=user.name, email=user.email, hashed_password=pwd_context.hash(user.password), otp=otp)
     db.add(new_user)
     db.commit()
-    send_otp_email(user.email, otp)
-    return {"message": "User registered. Please check email."}
+    
+    email_sent = send_otp_email(user.email, otp)
+    if email_sent:
+        return {"message": "User registered. Please check your email for OTP."}
+    else:
+        return {"message": "User registered, but email failed. Please check Render logs for OTP."}
 
 @app.post("/api/verify-otp")
 def verify_otp(data: OTPVerify, db: Session = Depends(get_db)):
@@ -252,8 +251,12 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
     otp = str(random.randint(100000, 999999))
     user.otp = otp
     db.commit()
-    send_otp_email(user.email, otp, "Handy Talk - Password Reset")
-    return {"message": "Password reset OTP sent to email."}
+    
+    email_sent = send_otp_email(user.email, otp, "Handy Talk - Password Reset")
+    if email_sent:
+        return {"message": "Password reset OTP sent to email."}
+    else:
+        return {"message": "Email failed. Please check Render logs for OTP."}
 
 @app.post("/api/reset-password")
 def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
@@ -298,7 +301,6 @@ groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 english_to_gloss = EnglishToGloss()
 mp_hands = mp.solutions.hands
 
-# Optimized for speed
 hands_detector = mp_hands.Hands(static_image_mode=False, max_num_hands=2, model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 SEQ_MODEL_PATH = Path("ml/models/sequence_classifier_normalized.pt")
