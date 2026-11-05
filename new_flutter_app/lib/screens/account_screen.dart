@@ -36,6 +36,7 @@ class _AccountScreenState extends State<AccountScreen> {
       final data = jsonDecode(res.body);
       _nameController.text = data['name'];
       _picController.text = data['profile_pic'] ?? '';
+      setState(() {});
     }
   }
 

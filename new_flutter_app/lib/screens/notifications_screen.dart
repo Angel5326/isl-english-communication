@@ -5,7 +5,6 @@ class NotificationsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Mock data for demo
     final notifications = [
       {"title": "Missed Call", "desc": "Aruna called you 5 mins ago.", "icon": Icons.phone_missed, "color": Colors.redAccent},
       {"title": "New Message", "desc": "John sent you a sign: 'HELLO'.", "icon": Icons.message, "color": Colors.blueAccent},
