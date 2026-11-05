@@ -33,6 +33,10 @@ class _LoginScreenState extends State<LoginScreen> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final prefs = await SharedPreferences.getInstance();
+        
+        // --- FIX: Clear old data before saving new token ---
+        await prefs.clear(); 
+        
         await prefs.setString('token', data['access_token']);
         await prefs.setString('email', data['email']);
         await prefs.setString('name', data['name']);
