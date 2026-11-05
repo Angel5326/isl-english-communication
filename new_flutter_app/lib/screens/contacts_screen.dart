@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'chat_dashboard.dart';
-import 'login_screen.dart'; // Import LoginScreen for logout
+import 'login_screen.dart';
 
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({super.key});
@@ -14,11 +14,29 @@ class ContactsScreen extends StatefulWidget {
 class _ContactsScreenState extends State<ContactsScreen> {
   List<dynamic> _contacts = [];
   String? _token;
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
 
   @override
   void initState() {
     super.initState();
     _loadContacts();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  // --- Search Filter Logic ---
+  List<dynamic> get _filteredContacts {
+    if (_searchQuery.isEmpty) return _contacts;
+    return _contacts.where((c) {
+      final name = (c['name'] ?? '').toString().toLowerCase();
+      final email = (c['email'] ?? '').toString().toLowerCase();
+      return name.contains(_searchQuery.toLowerCase()) || email.contains(_searchQuery.toLowerCase());
+    }).toList();
   }
 
   Future<void> _loadContacts() async {
@@ -40,16 +58,15 @@ class _ContactsScreenState extends State<ContactsScreen> {
     }
   }
 
-  // --- LOGOUT LOGIC ---
   Future<void> _logout() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.clear(); // Clears token and user data
+    await prefs.clear();
     
     if (mounted) {
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (_) => const LoginScreen()),
-        (route) => false, // Removes all previous screens from history
+        (route) => false,
       );
     }
   }
@@ -162,60 +179,120 @@ class _ContactsScreenState extends State<ContactsScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF0B0F19),
       appBar: AppBar(
-        title: const Text('My Contacts'), 
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        // --- BACK BUTTON ---
+        leading: Navigator.canPop(context) 
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back, color: Colors.white),
+                onPressed: () => Navigator.pop(context),
+              ) 
+            : null,
+        title: const Text('My Contacts', style: TextStyle(color: Colors.white)), 
         actions: [
-          // --- NEW: LOGOUT BUTTON ---
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.redAccent), 
             tooltip: 'Log Out',
             onPressed: _logout
           ),
           IconButton(
-            icon: const Icon(Icons.person_add), 
+            icon: const Icon(Icons.person_add, color: Colors.white), 
             tooltip: 'Add Contact',
             onPressed: _addContactDialog
           )
         ]
       ),
-      body: _contacts.isEmpty 
-          ? const Center(child: Text('No contacts yet. Add one!', style: TextStyle(color: Colors.white54)))
-          : ListView.builder(
-              itemCount: _contacts.length,
-              itemBuilder: (ctx, i) {
-                final c = _contacts[i];
-                return Card(
-                  color: Colors.white.withOpacity(0.05),
-                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: const Color(0xFF6366F1),
-                      child: Text(c['name'][0].toUpperCase(), style: const TextStyle(color: Colors.white)),
-                    ),
-                    title: Text(c['name'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    subtitle: Text(c['email'], style: const TextStyle(color: Colors.white54)),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        ElevatedButton(
-                          onPressed: () => _inviteContact(c['email']),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF06B6D4),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            minimumSize: const Size(60, 36)
-                          ),
-                          child: const Text('Connect'),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                          onPressed: () => _deleteContact(c['email']),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
+      body: Column(
+        children: [
+          // --- SEARCH BAR ---
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: TextField(
+              controller: _searchController,
+              style: const TextStyle(color: Colors.white),
+              onChanged: (value) {
+                setState(() {
+                  _searchQuery = value;
+                });
               },
+              decoration: InputDecoration(
+                hintText: 'Search by name or email...',
+                hintStyle: TextStyle(color: Colors.white.withOpacity(0.5)),
+                prefixIcon: const Icon(Icons.search, color: Colors.white54),
+                suffixIcon: _searchQuery.isNotEmpty 
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, color: Colors.white54),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _searchQuery = '');
+                        },
+                      )
+                    : null,
+                filled: true,
+                fillColor: Colors.white.withOpacity(0.05),
+                contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide.none,
+                ),
+              ),
             ),
+          ),
+          
+          // --- CONTACT LIST ---
+          Expanded(
+            child: _filteredContacts.isEmpty 
+                ? Center(
+                    child: Text(
+                      _searchQuery.isEmpty ? 'No contacts yet. Add one!' : 'No contacts found matching "$_searchQuery"', 
+                      style: const TextStyle(color: Colors.white54)
+                    )
+                  )
+                : ListView.builder(
+                    itemCount: _filteredContacts.length,
+                    itemBuilder: (ctx, i) {
+                      final c = _filteredContacts[i];
+                      return Card(
+                        color: Colors.white.withOpacity(0.05),
+                        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: const Color(0xFF6366F1),
+                            child: Text(
+                              (c['name'] != null && c['name'].toString().isNotEmpty) 
+                                  ? c['name'][0].toUpperCase() 
+                                  : '?', 
+                              style: const TextStyle(color: Colors.white)
+                            ),
+                          ),
+                          title: Text(c['name'] ?? 'Unknown', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          subtitle: Text(c['email'] ?? '', style: const TextStyle(color: Colors.white54)),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ElevatedButton(
+                                onPressed: () => _inviteContact(c['email']),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF06B6D4),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                  minimumSize: const Size(60, 36)
+                                ),
+                                child: const Text('Connect'),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                                onPressed: () => _deleteContact(c['email']),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () {
           Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatDashboard()));
