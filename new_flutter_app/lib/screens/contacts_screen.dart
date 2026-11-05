@@ -4,8 +4,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'chat_dashboard.dart';
 import 'login_screen.dart';
-import 'account_screen.dart';       // NEW
-import 'notifications_screen.dart'; // NEW
+import 'account_screen.dart';
+import 'notifications_screen.dart';
 
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({super.key});
@@ -51,7 +51,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
         headers: {'Authorization': 'Bearer $_token'},
       );
       if (response.statusCode == 200) setState(() => _contacts = jsonDecode(response.body));
-    } catch (e) {}
+    } catch (e) {
+      debugPrint('Error: $e');
+    }
   }
 
   Future<void> _logout() async {
@@ -79,7 +81,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
           TextButton(onPressed: () async {
             final name = nameCtrl.text.trim();
             final email = emailCtrl.text.trim();
-            if (name.isEmpty || !RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(email)) return;
+            if (name.isEmpty || !RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(email)) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid name or email')));
+              return;
+            }
 
             final res = await http.post(
               Uri.parse('https://handy-talk.onrender.com/api/contacts/add'),
@@ -89,6 +94,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
             if (res.statusCode == 200) {
               Navigator.pop(ctx);
               _loadContacts();
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Contact Added!')));
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(jsonDecode(res.body)['detail'])));
             }
           }, child: const Text('Add')),
         ],
@@ -106,8 +114,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
       ],
     ));
     if (confirm != true) return;
+    
     final encodedEmail = Uri.encodeComponent(email);
-    await http.delete(Uri.parse('https://handy-talk.onrender.com/api/contacts/$encodedEmail'), headers: {'Authorization': 'Bearer $_token'});
+    await http.delete(
+      Uri.parse('https://handy-talk.onrender.com/api/contacts/$encodedEmail'), 
+      headers: {'Authorization': 'Bearer $_token'}
+    );
     _loadContacts();
   }
 
@@ -123,7 +135,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
         showDialog(context: context, barrierDismissible: false, builder: (ctx) => AlertDialog(
           title: const Text('Session Code Created'),
           content: Text('Share code:\n\n$generatedCode', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 2)),
-          actions: [TextButton(onPressed: () { Navigator.pop(ctx); Navigator.push(context, MaterialPageRoute(builder: (_) => ChatDashboard(initialSessionId: generatedCode))); }, child: const Text('Enter Session'))],
+          actions: [
+            TextButton(onPressed: () { 
+              Navigator.pop(ctx); 
+              Navigator.push(context, MaterialPageRoute(builder: (_) => ChatDashboard(initialSessionId: generatedCode))); 
+            }, child: const Text('Enter Session'))
+          ],
         ));
       }
     }
@@ -138,11 +155,30 @@ class _ContactsScreenState extends State<ContactsScreen> {
         elevation: 0,
         title: const Text('My Contacts', style: TextStyle(color: Colors.white)),
         actions: [
-          // NEW: Notifications Button
-          IconButton(icon: const Icon(Icons.notifications, color: Colors.yellowAccent), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsScreen()))),
-          // NEW: Account Profile Button
-          IconButton(icon: const Icon(Icons.account_circle, color: Colors.blueAccent), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AccountScreen()))),
-          IconButton(icon: const Icon(Icons.logout, color: Colors.redAccent), onPressed: _logout),
+          // --- Add Contact Icon ---
+          IconButton(
+            icon: const Icon(Icons.person_add, color: Colors.greenAccent), 
+            tooltip: 'Add Contact', 
+            onPressed: _addContactDialog
+          ),
+          // Notifications Icon
+          IconButton(
+            icon: const Icon(Icons.notifications, color: Colors.yellowAccent), 
+            tooltip: 'Notifications',
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsScreen()))
+          ),
+          // Account Icon
+          IconButton(
+            icon: const Icon(Icons.account_circle, color: Colors.blueAccent), 
+            tooltip: 'My Account',
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AccountScreen()))
+          ),
+          // Logout Icon
+          IconButton(
+            icon: const Icon(Icons.logout, color: Colors.redAccent), 
+            tooltip: 'Logout',
+            onPressed: _logout
+          ),
         ]
       ),
       body: Column(
@@ -165,7 +201,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
           ),
           Expanded(
             child: _filteredContacts.isEmpty 
-                ? Center(child: Text(_searchQuery.isEmpty ? 'No contacts yet. Add one!' : 'No contacts found', style: const TextStyle(color: Colors.white54)))
+                ? Center(child: Text(_searchQuery.isEmpty ? 'No contacts yet. Click the + icon to add.' : 'No contacts found', style: const TextStyle(color: Colors.white54)))
                 : ListView.builder(
                     itemCount: _filteredContacts.length,
                     itemBuilder: (ctx, i) {
